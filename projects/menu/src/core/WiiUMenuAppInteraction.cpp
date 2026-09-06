@@ -1286,6 +1286,7 @@ void WiiUMenuApp::showFolderContextMenu(std::uint32_t folderId) {
     info.itemCount = static_cast<int>(folder->titleCount());
     info.colorIndex = folder->colorIndex;
     info.sizeIndex = folder->sizeIndex;
+    info.styleIndex = folder->styleIndex;
     m_folderOptions->setFolder(info);
     m_folderOptions->onOpen([this, folderId]() {
         if (m_folderOptions) m_folderOptions->hide();
@@ -1316,6 +1317,19 @@ void WiiUMenuApp::showFolderContextMenu(std::uint32_t folderId) {
         if (!m_folderStore.setSizeIndex(folderId, sizeIndex))
             return;
         saveFoldersOrReport("folder_size");
+    });
+    m_folderOptions->onStyleChange([this, folderId](int styleIndex) {
+        if (!m_folderStore.setStyleIndex(folderId, styleIndex) ||
+            !saveFoldersOrReport("folder_style"))
+            return;
+        const std::uint64_t id = folderTitleId(folderId);
+        const int index = findTitleIndex(id);
+        if (index >= 0 && index < m_model.count()) {
+            m_model.at(index).folderStyleIndex = styleIndex;
+            const auto& icons = m_grid->allIcons();
+            if (index < static_cast<int>(icons.size()) && icons[static_cast<std::size_t>(index)])
+                icons[static_cast<std::size_t>(index)]->setFolderStyleIndex(styleIndex);
+        }
     });
     m_folderOptions->onDelete([this, folderId, name]() {
         auto& local = nxui::I18n::instance();

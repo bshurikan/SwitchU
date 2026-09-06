@@ -268,6 +268,7 @@ bool appEntriesRefreshEquivalent(const AppEntry& a, const AppEntry& b) {
            a.folderId == b.folderId &&
            a.folderPreviewCount == b.folderPreviewCount &&
            a.folderColorIndex == b.folderColorIndex &&
+           a.folderStyleIndex == b.folderStyleIndex &&
            a.widgetId == b.widgetId &&
            a.widgetType == b.widgetType &&
            a.widgetColumns == b.widgetColumns &&
@@ -1087,6 +1088,7 @@ void WiiUMenuApp::composeRootPending(std::vector<PendingApp>& apps) {
         item.folderId = folder.id;
         item.folderPreviewCount = static_cast<int>(folder.titleCount());
         item.folderColorIndex = folder.colorIndex;
+        item.folderStyleIndex = folder.styleIndex;
         itemOrder.push_back(item.titleId);
         byId.emplace(item.titleId, std::move(item));
     }
@@ -1257,6 +1259,7 @@ GridModel WiiUMenuApp::buildRootFolderModel() {
         entry.folderId = folder.id;
         entry.folderPreviewCount = static_cast<int>(folder.titleCount());
         entry.folderColorIndex = folder.colorIndex;
+        entry.folderStyleIndex = folder.styleIndex;
         entries.emplace(entry.titleId, std::move(entry));
     }
     for (const auto& widget : m_widgetStore.all()) {
@@ -2900,6 +2903,7 @@ std::shared_ptr<GlossyIcon> WiiUMenuApp::makeIcon(const AppEntry& entry) {
     icon->setFolderPreviewCount(entry.folderPreviewCount);
     icon->setFolderVisualSeed(entry.folderId);
     icon->setFolderColorIndex(entry.folderColorIndex);
+    icon->setFolderStyleIndex(entry.folderStyleIndex);
     if (entry.kind == GridEntryKind::WidgetContinuation) {
         icon->setTag("widget_continuation");
         icon->setFocusable(false);
