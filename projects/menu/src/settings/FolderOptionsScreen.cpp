@@ -171,11 +171,14 @@ void FolderOptionsScreen::drawOverlayHeader(nxui::Renderer& ren,
         const nxui::Color shellOutline = lightTheme
             ? nxui::Color(0.12f, 0.16f, 0.20f, 0.18f * opacity)
             : nxui::Color::white().withAlpha(0.28f * opacity);
+        const nxui::Rect inner = shell.shrunk(1.f);
+        const float sliceH = std::max(8.f, shell.height * 0.09f);
         ren.drawRoundedRect(shell, shellFill, 18.f);
         ren.drawRoundedRect(shell, accent.withAlpha((lightTheme ? 0.10f : 0.14f) * opacity), 18.f);
-        ren.drawRoundedRectOutline(shell.shrunk(1.f), shellOutline, 17.f, 1.5f);
-        ren.drawRoundedRect({shell.x + 8.f, shell.y + 8.f, shell.width - 16.f, 10.f},
-                            accent.withAlpha(0.82f * opacity), 4.f);
+        ren.pushClipRect({inner.x, inner.y, inner.width, sliceH});
+        ren.drawRoundedRect(inner, accent.withAlpha(0.82f * opacity), 17.f);
+        ren.popClipRect();
+        ren.drawRoundedRectOutline(inner, shellOutline, 17.f, 1.5f);
     }
 
     const float textX = shell.right() + 24.f;

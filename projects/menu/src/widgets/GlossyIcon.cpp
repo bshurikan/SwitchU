@@ -1049,21 +1049,25 @@ void GlossyIcon::onContentRender(nxui::Renderer& ren) {
             ? nxui::Color(0.08f, 0.12f, 0.16f, 0.96f * m_opacity)
             : nxui::Color::white().withAlpha(0.98f * m_opacity);
 
+        const nxui::Rect inner = shell.shrunk(1.f * s);
+        const float innerRadius = std::max(8.f, shellRadius - 1.f * s);
+        const float sliceH = std::max(4.f, shell.height * 0.09f);
+
         ren.drawRoundedRect(shell, shellFill, shellRadius);
         ren.drawRoundedRect(shell, accent.withAlpha((lightTheme ? 0.10f : 0.14f) * m_opacity),
                             shellRadius);
-        ren.drawRoundedRectOutline(shell.shrunk(1.f * s), shellOutline,
-                                   std::max(8.f, shellRadius - 1.f * s), 1.5f * s);
 
-        const float sliceH = std::max(4.f, shell.height * 0.09f);
-        ren.drawRoundedRect({shell.x + 3.f * s, shell.y + 3.f * s,
-                             shell.width - 6.f * s, sliceH},
-                            accent.withAlpha(0.78f * m_opacity),
-                            sliceH * 0.45f);
-        ren.drawRoundedRect({shell.x + 3.f * s, shell.y + 3.f * s,
-                             shell.width - 6.f * s, sliceH * 0.45f},
-                            nxui::Color::white().withAlpha(0.22f * m_opacity),
-                            sliceH * 0.35f);
+        // Full-width top cap clipped to the shell so the corners follow the
+        // tile radius instead of overlapping the outline.
+        ren.pushClipRect({inner.x, inner.y, inner.width, sliceH});
+        ren.drawRoundedRect(inner, accent.withAlpha(0.78f * m_opacity), innerRadius);
+        ren.popClipRect();
+        const float highlightH = std::max(2.f, sliceH * 0.45f);
+        ren.pushClipRect({inner.x, inner.y, inner.width, highlightH});
+        ren.drawRoundedRect(inner, nxui::Color::white().withAlpha(0.22f * m_opacity), innerRadius);
+        ren.popClipRect();
+
+        ren.drawRoundedRectOutline(inner, shellOutline, innerRadius, 1.5f * s);
 
         const bool named = m_font && !m_title.empty();
         if (named) {
