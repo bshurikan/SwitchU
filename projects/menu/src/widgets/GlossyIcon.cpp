@@ -471,6 +471,11 @@ void GlossyIcon::setWidgetGameTextures(std::uint64_t titleId,
 
 void GlossyIcon::copyWidgetPresentationFrom(GlossyIcon& source) {
     m_entryKind = source.m_entryKind;
+    m_folderPreviewCount = source.m_folderPreviewCount;
+    m_folderVisualSeed = source.m_folderVisualSeed;
+    m_folderColorIndex = source.m_folderColorIndex;
+    m_folderStyleIndex = source.m_folderStyleIndex;
+    m_themeMode = source.m_themeMode;
     m_widgetType = source.m_widgetType;
     m_widgetColumns = source.m_widgetColumns;
     m_widgetRows = source.m_widgetRows;
@@ -1028,19 +1033,26 @@ void GlossyIcon::onContentRender(nxui::Renderer& ren) {
             return;
         }
 
-        // Glass style — translucent shell with an accent slice and contrast band.
+        // Simple style — solid tile that follows the active theme light/dark mode.
+        const bool lightTheme = m_themeMode == nxui::ThemeMode::Light;
         const float inset = 8.f * s;
         const nxui::Rect shell = r.shrunk(inset);
         const float shellRadius = std::max(12.f, rad - 2.f);
 
-        ren.drawRoundedRect(shell,
-                            nxui::Color(0.04f, 0.07f, 0.11f, 0.42f * m_opacity),
+        const nxui::Color shellFill = lightTheme
+            ? nxui::Color(0.94f, 0.96f, 0.97f, 0.96f * m_opacity)
+            : nxui::Color(0.10f, 0.13f, 0.17f, 0.92f * m_opacity);
+        const nxui::Color shellOutline = lightTheme
+            ? nxui::Color(0.12f, 0.16f, 0.20f, 0.18f * m_opacity)
+            : nxui::Color::white().withAlpha(0.28f * m_opacity);
+        const nxui::Color titleColor = lightTheme
+            ? nxui::Color(0.08f, 0.12f, 0.16f, 0.96f * m_opacity)
+            : nxui::Color::white().withAlpha(0.98f * m_opacity);
+
+        ren.drawRoundedRect(shell, shellFill, shellRadius);
+        ren.drawRoundedRect(shell, accent.withAlpha((lightTheme ? 0.10f : 0.14f) * m_opacity),
                             shellRadius);
-        ren.drawRoundedRect(shell,
-                            accent.withAlpha(0.16f * m_opacity),
-                            shellRadius);
-        ren.drawRoundedRectOutline(shell.shrunk(1.f * s),
-                                   nxui::Color::white().withAlpha(0.38f * m_opacity),
+        ren.drawRoundedRectOutline(shell.shrunk(1.f * s), shellOutline,
                                    std::max(8.f, shellRadius - 1.f * s), 1.5f * s);
 
         const float sliceH = std::max(4.f, shell.height * 0.09f);
@@ -1067,20 +1079,7 @@ void GlossyIcon::onContentRender(nxui::Renderer& ren) {
             const nxui::Vec2 textPos{shell.x + (shell.width - textW) * 0.5f,
                                      shell.y + (shell.height - textH) * 0.52f};
 
-            const float bandPadX = 10.f * s;
-            const float bandPadY = 6.f * s;
-            const nxui::Rect band{
-                std::max(shell.x + 4.f * s, textPos.x - bandPadX),
-                textPos.y - bandPadY,
-                std::min(shell.width - 8.f * s, textW + bandPadX * 2.f),
-                textH + bandPadY * 2.f};
-            ren.drawRoundedRect(band,
-                                nxui::Color(0.02f, 0.04f, 0.08f, 0.62f * m_opacity),
-                                std::max(6.f, band.height * 0.35f));
-
-            ren.drawText(m_title, textPos, m_font,
-                         nxui::Color::white().withAlpha(0.98f * m_opacity),
-                         textScale);
+            ren.drawText(m_title, textPos, m_font, titleColor, textScale);
         } else {
             const float cell = std::min(shell.width, shell.height) * 0.16f;
             const float gap = cell * 0.22f;

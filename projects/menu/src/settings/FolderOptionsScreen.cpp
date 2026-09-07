@@ -86,11 +86,11 @@ void FolderOptionsScreen::buildTabs() {
     style.label = i18n.tr("folder.style", "Folder style");
     style.description = i18n.tr(
         "folder.style_desc",
-        "Applies Classic or Glass to every folder, including new ones.");
+        "Applies Classic or Simple to every folder, including new ones. Simple follows the active theme.");
     style.type = ItemType::Selector;
     style.options = {
         i18n.tr("folder.style_classic", "Classic"),
-        i18n.tr("folder.style_glass", "Glass"),
+        i18n.tr("folder.style_simple", "Simple"),
     };
     style.intVal = m_folder.styleIndex;
     style.onChange = [this](SettingItem& self) {
@@ -164,16 +164,18 @@ void FolderOptionsScreen::drawOverlayHeader(nxui::Renderer& ren,
                                 nxui::Color::white().withAlpha(0.20f * opacity), 1.5f);
         }
     } else {
-        ren.drawRoundedRect(shell,
-                            nxui::Color(0.04f, 0.07f, 0.11f, 0.50f * opacity), 18.f);
-        ren.drawRoundedRect(shell, accent.withAlpha(0.18f * opacity), 18.f);
-        ren.drawRoundedRectOutline(shell.shrunk(1.f),
-                                   nxui::Color::white().withAlpha(0.40f * opacity),
-                                   17.f, 1.5f);
+        const bool lightTheme = m_theme && m_theme->mode == nxui::ThemeMode::Light;
+        const nxui::Color shellFill = lightTheme
+            ? nxui::Color(0.94f, 0.96f, 0.97f, 0.96f * opacity)
+            : nxui::Color(0.10f, 0.13f, 0.17f, 0.92f * opacity);
+        const nxui::Color shellOutline = lightTheme
+            ? nxui::Color(0.12f, 0.16f, 0.20f, 0.18f * opacity)
+            : nxui::Color::white().withAlpha(0.28f * opacity);
+        ren.drawRoundedRect(shell, shellFill, 18.f);
+        ren.drawRoundedRect(shell, accent.withAlpha((lightTheme ? 0.10f : 0.14f) * opacity), 18.f);
+        ren.drawRoundedRectOutline(shell.shrunk(1.f), shellOutline, 17.f, 1.5f);
         ren.drawRoundedRect({shell.x + 8.f, shell.y + 8.f, shell.width - 16.f, 10.f},
                             accent.withAlpha(0.82f * opacity), 4.f);
-        ren.drawRoundedRect({shell.x + 14.f, shell.y + 42.f, shell.width - 28.f, 22.f},
-                            nxui::Color(0.02f, 0.04f, 0.08f, 0.55f * opacity), 8.f);
     }
 
     const float textX = shell.right() + 24.f;

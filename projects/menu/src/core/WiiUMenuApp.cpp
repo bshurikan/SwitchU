@@ -2901,6 +2901,7 @@ std::shared_ptr<GlossyIcon> WiiUMenuApp::makeIcon(const AppEntry& entry) {
     icon->setFolderVisualSeed(entry.folderId);
     icon->setFolderColorIndex(entry.folderColorIndex);
     icon->setFolderStyleIndex(m_config.folderStyle);
+    icon->setThemeMode(m_theme.mode);
     if (entry.kind == GridEntryKind::WidgetContinuation) {
         icon->setTag("widget_continuation");
         icon->setFocusable(false);
