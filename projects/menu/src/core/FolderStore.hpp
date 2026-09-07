@@ -8,9 +8,9 @@
 namespace switchu::folders {
 
 inline constexpr int kFolderStyleClassic = 0;
-inline constexpr int kFolderStyleGlass = 1;
+inline constexpr int kFolderStyleSimple = 1;
 inline constexpr int kFolderStyleCount = 2;
-inline constexpr int kDefaultFolderStyle = kFolderStyleGlass;
+inline constexpr int kDefaultFolderStyle = kFolderStyleSimple;
 
 struct Folder {
     std::uint32_t id = 0;

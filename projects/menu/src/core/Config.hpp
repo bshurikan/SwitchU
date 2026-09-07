@@ -25,7 +25,7 @@ struct AppConfig {
     std::string steamGridDbApiKey;
 
     std::string themePreset = "Default Light";
-    // 0 = Classic, 1 = Glass. Applies to every folder tile.
+    // 0 = Classic, 1 = Simple. Applies to every folder tile.
     int folderStyle = 1;
 
     bool load();
