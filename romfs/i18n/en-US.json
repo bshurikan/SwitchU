@@ -515,6 +515,10 @@
     "size_small": "Small",
     "size_medium": "Medium",
     "size_large": "Large",
+    "style": "Folder style",
+    "style_desc": "Applies Classic or Simple to every folder, including new ones. Simple follows the active theme.",
+    "style_classic": "Classic",
+    "style_simple": "Simple",
     "items": "items"
   },
   "add": {
