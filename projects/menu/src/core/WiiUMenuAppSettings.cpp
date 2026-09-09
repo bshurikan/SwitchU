@@ -726,9 +726,11 @@ void WiiUMenuApp::syncSteamGridDb() {
                 m_recentWidgetIcon.reset();
             }
             if (result.kind == SteamGridDbManager::ArtworkKind::Icon && m_grid) {
+                m_folderCoverCache.erase(result.titleId);
                 m_iconStreamer.reloadTitle(result.titleId, m_grid->currentPage(),
                                            m_grid->iconsPerPage(), app().gpu(),
                                            app().renderer(), m_grid->allIcons());
+                applyFolderCoversToIcons();
             } else {
                 showFocusedSteamGridDbArtwork(true);
             }

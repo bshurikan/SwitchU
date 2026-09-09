@@ -227,6 +227,8 @@ private:
     void closeActiveOverlays();
     void handleTouch();
     std::shared_ptr<GlossyIcon> makeIcon(const AppEntry& entry);
+    nxui::Texture* folderCoverTexture(std::uint64_t titleId);
+    void applyFolderCoversToIcons();
     void wireFocusCallback();
     void wireGlobalActions();
     void toggleAccessibilitySpeech();
@@ -400,6 +402,7 @@ private:
     std::vector<uint64_t> m_layoutSlots;
     std::unordered_map<std::uint64_t, switchu::widgets::WidgetSize> m_gameSizes;
     bool m_layoutDirty = false;
+    std::unordered_map<std::uint64_t, std::unique_ptr<nxui::Texture>> m_folderCoverCache;
     switchu::folders::FolderStore m_folderStore;
     switchu::widgets::WidgetStore m_widgetStore;
     std::uint64_t m_recentWidgetAssetTitleId = 0;

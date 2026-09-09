@@ -9,8 +9,21 @@ namespace switchu::folders {
 
 inline constexpr int kFolderStyleClassic = 0;
 inline constexpr int kFolderStyleSimple = 1;
-inline constexpr int kFolderStyleCount = 2;
-inline constexpr int kDefaultFolderStyle = kFolderStyleSimple;
+inline constexpr int kFolderStyleMinimal = 2;
+inline constexpr int kFolderStyleTab = 3;
+inline constexpr int kFolderStyleRing = 4;
+inline constexpr int kFolderStyleManila = 5;
+inline constexpr int kFolderStyleLabel = 6;
+inline constexpr int kFolderStyleCount = 7;
+inline constexpr int kDefaultFolderStyle = kFolderStyleClassic;
+
+inline bool folderStyleSupportsCover(int styleIndex) {
+    return styleIndex != kFolderStyleClassic;
+}
+
+inline bool folderShouldShowCover(int styleIndex, bool showCover) {
+    return showCover && folderStyleSupportsCover(styleIndex);
+}
 
 struct Folder {
     std::uint32_t id = 0;
@@ -22,6 +35,10 @@ struct Folder {
 
     std::size_t titleCount() const;
 };
+
+inline std::uint64_t firstCoverTitleId(const Folder& folder) {
+    return folder.titleIds.empty() ? 0 : folder.titleIds.front();
+}
 
 inline constexpr int kMaxFolderPages = 8;
 

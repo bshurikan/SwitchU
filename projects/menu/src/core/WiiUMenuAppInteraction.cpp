@@ -1287,6 +1287,7 @@ void WiiUMenuApp::showFolderContextMenu(std::uint32_t folderId) {
     info.colorIndex = folder->colorIndex;
     info.sizeIndex = folder->sizeIndex;
     info.styleIndex = m_config.folderStyle;
+    info.showCover = m_config.folderShowCover;
     m_folderOptions->setFolder(info);
     m_folderOptions->onOpen([this, folderId]() {
         if (m_folderOptions) m_folderOptions->hide();
@@ -1336,6 +1337,18 @@ void WiiUMenuApp::showFolderContextMenu(std::uint32_t folderId) {
                 continue;
             icons[static_cast<std::size_t>(i)]->setFolderStyleIndex(clamped);
         }
+        applyFolderCoversToIcons();
+    });
+    m_folderOptions->onCoverChange([this](bool showCover) {
+        if (m_config.folderShowCover == showCover)
+            return;
+        m_config.folderShowCover = showCover;
+        if (m_configSaveFuture.valid())
+            m_configSaveFuture.wait();
+        m_configSaveFuture = m_threadPool.submit([config = m_config]() {
+            config.save();
+        });
+        applyFolderCoversToIcons();
     });
     m_folderOptions->onDelete([this, folderId, name]() {
         auto& local = nxui::I18n::instance();

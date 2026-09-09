@@ -1,5 +1,6 @@
 #include "FolderOptionsScreen.hpp"
 #include "widgets/FolderPalette.hpp"
+#include "widgets/FolderStyleDraw.hpp"
 #include "core/FolderStore.hpp"
 #include <nxui/core/I18n.hpp>
 #include <nxui/core/Renderer.hpp>
@@ -86,11 +87,16 @@ void FolderOptionsScreen::buildTabs() {
     style.label = i18n.tr("folder.style", "Folder style");
     style.description = i18n.tr(
         "folder.style_desc",
-        "Applies Classic or Simple to every folder, including new ones. Simple follows the active theme.");
+        "Applies to every folder, including new ones.");
     style.type = ItemType::Selector;
     style.options = {
         i18n.tr("folder.style_classic", "Classic"),
         i18n.tr("folder.style_simple", "Simple"),
+        i18n.tr("folder.style_minimal", "Minimal"),
+        i18n.tr("folder.style_tab", "Tab"),
+        i18n.tr("folder.style_ring", "Ring"),
+        i18n.tr("folder.style_manila", "Manila"),
+        i18n.tr("folder.style_label", "Label"),
     };
     style.intVal = m_folder.styleIndex;
     style.onChange = [this](SettingItem& self) {
@@ -99,6 +105,20 @@ void FolderOptionsScreen::buildTabs() {
         if (m_styleCb) m_styleCb(m_folder.styleIndex);
     };
     appearance.items.push_back(std::move(style));
+
+    SettingItem cover;
+    cover.label = i18n.tr("folder.show_cover", "Show cover");
+    cover.description = i18n.tr(
+        "folder.show_cover_desc",
+        "Shows the first game on every folder. Classic keeps the mosaic instead.");
+    cover.type = ItemType::Toggle;
+    cover.boolVal = m_folder.showCover;
+    cover.anim01 = cover.boolVal ? 1.f : 0.f;
+    cover.onChange = [this](SettingItem& self) {
+        m_folder.showCover = self.boolVal;
+        if (m_coverCb) m_coverCb(m_folder.showCover);
+    };
+    appearance.items.push_back(std::move(cover));
     m_tabs.push_back(std::move(appearance));
 
     Tab management;
@@ -140,46 +160,19 @@ void FolderOptionsScreen::drawOverlayHeader(nxui::Renderer& ren,
         return;
 
     const nxui::Rect shell{panel.x + 30.f, panel.y + 24.f, 92.f, 92.f};
-    const nxui::Color accent = switchu::folders::colorForIndex(m_folder.colorIndex);
-    const bool classic = m_folder.styleIndex == switchu::folders::kFolderStyleClassic;
-
-    if (classic) {
-        ren.drawRoundedRect({shell.x, shell.y + 5.f, shell.width, shell.height},
-                            nxui::Color::black().withAlpha(0.22f * opacity), 18.f);
-        ren.drawRoundedRect(shell, nxui::Color(0.92f, 0.95f, 0.94f, 0.96f * opacity), 18.f);
-        ren.drawRoundedRectOutline(shell.shrunk(1.f),
-                                   nxui::Color::white().withAlpha(0.90f * opacity),
-                                   17.f, 2.f);
-
-        constexpr float cell = 19.f;
-        constexpr float gap = 4.f;
-        const float gridSize = cell * 3.f + gap * 2.f;
-        const float gx = shell.x + (shell.width - gridSize) * 0.5f;
-        const float gy = shell.y + (shell.height - gridSize) * 0.5f;
-        for (int i = 0; i < 9; ++i) {
-            nxui::Rect tile{gx + (i % 3) * (cell + gap),
-                            gy + (i / 3) * (cell + gap), cell, cell};
-            ren.drawRoundedRect(tile, accent.withAlpha(0.96f * opacity), 4.f);
-            ren.drawRoundedRect({tile.x + 2.f, tile.y + 2.f, tile.width - 4.f, 3.f},
-                                nxui::Color::white().withAlpha(0.20f * opacity), 1.5f);
-        }
-    } else {
-        const bool lightTheme = m_theme && m_theme->mode == nxui::ThemeMode::Light;
-        const nxui::Color shellFill = lightTheme
-            ? nxui::Color(0.94f, 0.96f, 0.97f, 0.96f * opacity)
-            : nxui::Color(0.10f, 0.13f, 0.17f, 0.92f * opacity);
-        const nxui::Color shellOutline = lightTheme
-            ? nxui::Color(0.12f, 0.16f, 0.20f, 0.18f * opacity)
-            : nxui::Color::white().withAlpha(0.28f * opacity);
-        const nxui::Rect inner = shell.shrunk(1.f);
-        const float sliceH = std::max(8.f, shell.height * 0.09f);
-        ren.drawRoundedRect(shell, shellFill, 18.f);
-        ren.drawRoundedRect(shell, accent.withAlpha((lightTheme ? 0.10f : 0.14f) * opacity), 18.f);
-        ren.pushClipRect({inner.x, inner.y, inner.width, sliceH});
-        ren.drawRoundedRect(inner, accent.withAlpha(0.82f * opacity), 17.f);
-        ren.popClipRect();
-        ren.drawRoundedRectOutline(inner, shellOutline, 17.f, 1.5f);
-    }
+    switchu::folders::FolderStyleDrawArgs preview;
+    preview.renderer = &ren;
+    preview.bounds = shell;
+    preview.radius = 18.f;
+    preview.scale = 1.f;
+    preview.opacity = opacity;
+    preview.styleIndex = m_folder.styleIndex;
+    preview.accent = switchu::folders::colorForIndex(m_folder.colorIndex);
+    preview.themeMode = m_theme->mode;
+    preview.drawName = false;
+    preview.showCover = m_folder.showCover;
+    preview.schematicPlaceholder = true;
+    switchu::folders::drawFolderStyle(preview);
 
     const float textX = shell.right() + 24.f;
     const float textW = std::max(0.f, panel.right() - 30.f - textX);
