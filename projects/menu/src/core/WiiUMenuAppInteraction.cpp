@@ -625,6 +625,8 @@ bool WiiUMenuApp::activateEditModeTarget() {
     }
 
     if (m_openFolderId != 0 && m_editHeldTitleId < kFolderTitleIdPrefix) {
+        // Folder order lives in folders.json, not the HOME layoutSlots swap.
+        // Same-folder drops swap in place; inbound drops still insert.
         const std::uint32_t targetFolderId = m_openFolderId;
         if (!m_folderStore.placeTitle(targetFolderId, m_editHeldTitleId,
                                       static_cast<std::size_t>(target)) ||
