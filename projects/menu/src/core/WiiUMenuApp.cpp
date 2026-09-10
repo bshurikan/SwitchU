@@ -342,6 +342,8 @@ bool WiiUMenuApp::presentInitialFrame(nxui::Renderer& ren) {
 }
 
 void WiiUMenuApp::scheduleLeaveCapture(std::function<void()> afterCapture) {
+    // Only title launch/resume should call this. System applets leave the last
+    // title snapshot in place so AppletReturn keeps a matching splash+session.
     if (m_leaveCapturePending) {
         if (!afterCapture)
             return;
@@ -827,7 +829,7 @@ void WiiUMenuApp::appendAddUserButton() {
     add->setOnActivate([this]() {
         m_audio.playSfx(Sfx::Activate);
 #ifdef SWITCHU_MENU
-        scheduleLeaveCapture([this]() { m_launcher.launchUserCreator(); });
+        m_launcher.launchUserCreator();
 #endif
     });
     m_userAvatarButtons.push_back(add);
@@ -924,7 +926,7 @@ void WiiUMenuApp::loadNextUserAvatar() {
     avatar->setOnActivate([this, uid]() {
         m_audio.playSfx(Sfx::Activate);
 #ifdef SWITCHU_MENU
-        scheduleLeaveCapture([this, uid]() { m_launcher.launchUserPage(uid); });
+        m_launcher.launchUserPage(uid);
 #endif
     });
 
@@ -3444,11 +3446,13 @@ void WiiUMenuApp::buildGrid() {
         updateCursor();
     });
 
-    // Prefer the leave-frame session (page/folder/focus) when returning from a
-    // title or applet so the live UI matches the splash we just showed.
+    // Prefer the leave-frame session from the last title launch/resume so the
+    // live UI matches the splash. System applets do not rewrite that cache.
+    bool restoredLeaveSession = false;
 #ifdef SWITCHU_MENU
     if (m_leaveSession.valid) {
         restoreLeaveSession();
+        restoredLeaveSession = true;
     } else if (m_launcher.suspendedTitleId() != 0) {
         int initialPage = 0;
         int suspendedIndex = findTitleIndex(m_launcher.suspendedTitleId());
@@ -3495,15 +3499,9 @@ void WiiUMenuApp::buildGrid() {
 
     SidebarManager::Actions sidebarActions;
 #ifdef SWITCHU_MENU
-    sidebarActions.onAlbum       = [this]() {
-        scheduleLeaveCapture([this]() { m_launcher.launchAlbum(); });
-    };
-    sidebarActions.onMiiEditor   = [this]() {
-        scheduleLeaveCapture([this]() { m_launcher.launchMiiEditor(); });
-    };
-    sidebarActions.onControllers = [this]() {
-        scheduleLeaveCapture([this]() { m_launcher.launchControllerPairing(); });
-    };
+    sidebarActions.onAlbum       = [this]() { m_launcher.launchAlbum(); };
+    sidebarActions.onMiiEditor   = [this]() { m_launcher.launchMiiEditor(); };
+    sidebarActions.onControllers = [this]() { m_launcher.launchControllerPairing(); };
 #else
     sidebarActions.onAlbum       = [this]() { m_audio.playSfx(Sfx::Activate); };
     sidebarActions.onMiiEditor   = [this]() { m_audio.playSfx(Sfx::Activate); };
@@ -3699,10 +3697,23 @@ void WiiUMenuApp::buildGrid() {
     root.addChild(m_contentLayer);
     root.addChild(m_overlayLayer);
 
-    if (!focusTitle(m_launcher.suspendedTitleId())) {
+#ifdef SWITCHU_MENU
+    // Leave-session restore already placed page/folder/focus to match the
+    // title splash. Calling focusTitle(suspended) afterward would reopen a
+    // folder under a mismatched root splash when returning from applets.
+    if (!restoredLeaveSession) {
+        if (!focusTitle(m_launcher.suspendedTitleId())) {
+            if (auto* firstIcon = m_grid->focusManager().current())
+                focusManager().setFocus(firstIcon);
+        }
+    } else if (!focusManager().current()) {
         if (auto* firstIcon = m_grid->focusManager().current())
             focusManager().setFocus(firstIcon);
     }
+#else
+    if (auto* firstIcon = m_grid->focusManager().current())
+        focusManager().setFocus(firstIcon);
+#endif
     updateCursor();
     showFocusedSteamGridDbArtwork();
     m_themeRenderDebugFrames = 12;
@@ -4334,7 +4345,7 @@ void WiiUMenuApp::onUpdate(float dt) {
 
     if (m_pendingNetConnect) {
         m_pendingNetConnect = false;
-        scheduleLeaveCapture([this]() { m_launcher.launchNetConnect(); });
+        m_launcher.launchNetConnect();
         return;
     }
 
