@@ -528,8 +528,8 @@ private:
     bool m_leaveSplashDrawn = false;
     bool m_leaveMotionFrozen = false;
     bool m_leaveMotionFreezePending = false;
-    static constexpr float kLeaveSplashHoldDur = 0.14f;
-    static constexpr float kLeaveSplashFadeDur = 0.42f;
+    static constexpr float kLeaveSplashHoldDur = 0.06f;
+    static constexpr float kLeaveSplashFadeDur = 0.25f;
 
     bool  m_audioInitPending = false;
     bool  m_audioHeldLogged  = false;
