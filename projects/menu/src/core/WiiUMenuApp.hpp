@@ -155,6 +155,9 @@ private:
     void activateApplication(GlossyIcon* source, AppEntry* entry,
                              std::uint64_t titleId,
                              const std::string& launchTitle);
+    // Already-open titles skip the cold-launch zoom and resume quickly.
+    void resumeSuspendedApplication(std::uint64_t titleId,
+                                    const std::string& launchTitle);
 #endif
     void renameFolder(std::uint32_t folderId);
     void showFolderContextMenu(std::uint32_t folderId);

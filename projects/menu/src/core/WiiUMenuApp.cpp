@@ -2777,21 +2777,25 @@ void WiiUMenuApp::closeFolder(bool preserveEditMode) {
 }
 
 #ifdef SWITCHU_MENU
+void WiiUMenuApp::resumeSuspendedApplication(std::uint64_t titleId,
+                                             const std::string& launchTitle) {
+    if (titleId == 0 || !m_launchAnim)
+        return;
+    m_audio.playSfx(Sfx::LaunchGame);
+    m_launchAnim->startResume([this, titleId, launchTitle]() {
+        m_widgetStore.recordLaunch(titleId, launchTitle,
+            static_cast<std::int64_t>(std::time(nullptr)));
+        m_widgetStore.save();
+        m_launcher.resumeApplication();
+    });
+}
+
 void WiiUMenuApp::activateApplication(GlossyIcon* source, AppEntry* entry,
                                       std::uint64_t titleId,
                                       const std::string& launchTitle) {
     if (!source || titleId == 0) return;
     if (m_launcher.isAppSuspended(titleId)) {
-        m_audio.playSfx(Sfx::LaunchGame);
-        m_launchAnim->start(source->focusRect(), source->texture(),
-            source->cornerRadius(), m_theme.panelBase, m_theme.panelBorder,
-            0, {}, nullptr,
-            [this, titleId, launchTitle]() {
-                m_widgetStore.recordLaunch(titleId, launchTitle,
-                    static_cast<std::int64_t>(std::time(nullptr)));
-                m_widgetStore.save();
-                m_launcher.resumeApplication();
-            });
+        resumeSuspendedApplication(titleId, launchTitle);
         return;
     }
 
@@ -3053,20 +3057,7 @@ std::shared_ptr<GlossyIcon> WiiUMenuApp::makeIcon(const AppEntry& entry) {
     icon->setOnActivate([this, raw]() {
         uint64_t tid = raw->titleId();
         if (m_launcher.isAppSuspended(tid)) {
-            m_audio.playSfx(Sfx::LaunchGame);
-            nxui::Rect   fr   = raw->focusRect();
-            const nxui::Texture* tex = raw->texture();
-            float  cr   = raw->cornerRadius();
-            nxui::Color  base = m_theme.panelBase;
-            nxui::Color  bord = m_theme.panelBorder;
-            m_launchAnim->start(fr, tex, cr, base, bord, 0, {},
-                nullptr,
-                [this, tid, title = raw->title()]() {
-                    m_widgetStore.recordLaunch(tid, title,
-                        static_cast<std::int64_t>(std::time(nullptr)));
-                    m_widgetStore.save();
-                    m_launcher.resumeApplication();
-                });
+            resumeSuspendedApplication(tid, raw->title());
         } else {
             AppEntry* entry = nullptr;
             int entryIndex = findTitleIndex(tid);
