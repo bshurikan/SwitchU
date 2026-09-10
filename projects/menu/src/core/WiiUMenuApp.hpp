@@ -35,6 +35,7 @@
 #include "core/FolderStore.hpp"
 #include "core/WidgetStore.hpp"
 #include "core/ThemePreset.hpp"
+#include "core/LeaveFrameCache.hpp"
 #include "sidebar/SidebarManager.hpp"
 #include "launcher/AppletLauncher.hpp"
 #include "launcher/AppListLoader.hpp"
@@ -56,6 +57,7 @@
 #include <atomic>
 #include <future>
 #include <utility>
+#include <functional>
 #include <unordered_map>
 #include <switch.h>
 #ifdef SWITCHU_MENU
@@ -84,6 +86,8 @@ public:
     void onDestroy() override;
     void onUpdate(float dt) override;
     void onRender(nxui::Renderer& ren) override;
+    bool presentInitialFrame(nxui::Renderer& ren) override;
+    void onAfterPresent(nxui::Renderer& ren) override;
 
     nxui::Widget* focusRoot() override;
 
@@ -156,6 +160,13 @@ private:
                              std::uint64_t titleId,
                              const std::string& launchTitle);
 #endif
+    void scheduleLeaveCapture(std::function<void()> afterCapture);
+    LeaveFrameSession captureLeaveSession() const;
+    bool saveLeaveFrame(nxui::Renderer& ren);
+    void restoreLeaveSession();
+    void setLeaveMotionFrozen(bool frozen);
+    void updateLeaveSplashHandoff(float dt);
+    bool leaveSplashActive() const;
     void renameFolder(std::uint32_t folderId);
     void showFolderContextMenu(std::uint32_t folderId);
     bool saveFoldersOrReport(const char* operation);
@@ -505,6 +516,20 @@ private:
     std::future<void> m_accessibilityFuture;
     bool m_accessibilityReady = false;
     std::uint64_t m_fastReturnStartupTick = 0;
+
+    bool m_leaveCapturePending = false;
+    std::function<void()> m_leaveCaptureAfter;
+    LeaveFrameSession m_leaveSession;
+    nxui::Texture m_leaveSplashTex;
+    enum class LeaveSplashPhase { None, Hold, Fade };
+    LeaveSplashPhase m_leaveSplashPhase = LeaveSplashPhase::None;
+    float m_leaveSplashHoldRemaining = 0.f;
+    float m_leaveSplashFade = 0.f;
+    bool m_leaveSplashDrawn = false;
+    bool m_leaveMotionFrozen = false;
+    bool m_leaveMotionFreezePending = false;
+    static constexpr float kLeaveSplashHoldDur = 0.14f;
+    static constexpr float kLeaveSplashFadeDur = 0.42f;
 
     bool  m_audioInitPending = false;
     bool  m_audioHeldLogged  = false;

@@ -409,11 +409,11 @@ void WiiUMenuApp::createSettings() {
     });
     m_settings->onControllerPairing([this]() {
         if (m_settings) m_settings->hide();
-        m_launcher.launchControllerPairing();
+        scheduleLeaveCapture([this]() { m_launcher.launchControllerPairing(); });
     });
     m_settings->onControllerRemapping([this]() {
         if (m_settings) m_settings->hide();
-        m_launcher.launchControllerRemapping();
+        scheduleLeaveCapture([this]() { m_launcher.launchControllerRemapping(); });
     });
     m_settings->onControllerTest([this]() {
         if (!m_controllerTest) return;

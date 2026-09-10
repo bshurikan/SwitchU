@@ -168,6 +168,99 @@ void GpuDevice::endFrame() {
     m_queue.presentImage(m_swapchain, m_slot);
 }
 
+bool GpuDevice::downloadFramebufferRgba(std::vector<uint8_t>& outRgba,
+                                        int& outW, int& outH,
+                                        bool halfRes) {
+    if (m_slot < 0 || !m_queue)
+        return false;
+
+    waitForTextureUploads();
+    waitIdle();
+
+    const int fullW = FB_WIDTH;
+    const int fullH = FB_HEIGHT;
+    const bool useHalf = halfRes && m_offscreenReady;
+    outW = useHalf ? fullW / 2 : fullW;
+    outH = useHalf ? fullH / 2 : fullH;
+    if (outW <= 0 || outH <= 0)
+        return false;
+
+    const uint32_t byteSize = static_cast<uint32_t>(outW) * static_cast<uint32_t>(outH) * 4u;
+    const uint32_t stagingSize = (byteSize + kGpuAlign - 1) & ~(kGpuAlign - 1);
+    auto staging = dk::MemBlockMaker{m_dev, stagingSize}
+        .setFlags(DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached)
+        .create();
+    if (!staging || !staging.getCpuAddr())
+        return false;
+
+    // Full-res path needs an uncompressed blit target: swapchain images use
+    // HwCompression, and copyImageToBuffer from those is unreliable / soft.
+    dk::Image tempImage;
+    dk::UniqueMemBlock tempImageMem;
+    if (!useHalf) {
+        dk::ImageLayout layout;
+        dk::ImageLayoutMaker{m_dev}
+            .setFlags(DkImageFlags_UsageRender | DkImageFlags_Usage2DEngine)
+            .setFormat(DkImageFormat_RGBA8_Unorm)
+            .setDimensions(static_cast<uint32_t>(fullW), static_cast<uint32_t>(fullH))
+            .initialize(layout);
+        const uint32_t imgSize =
+            (static_cast<uint32_t>(layout.getSize()) + kGpuAlign - 1) & ~(kGpuAlign - 1);
+        tempImageMem = dk::MemBlockMaker{m_dev, imgSize}
+            .setFlags(DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image)
+            .create();
+        if (!tempImageMem)
+            return false;
+        tempImage.initialize(layout, tempImageMem, 0);
+    }
+
+    m_uploadCmdbuf.clear();
+    m_uploadCmdbuf.addMemory(m_uploadCmdPool.block, 0, 64 * 1024);
+
+    dk::ImageView srcView{m_fbImages[m_slot]};
+    m_uploadCmdbuf.barrier(DkBarrier_Full, DkInvalidateFlags_Image);
+    if (useHalf) {
+        dk::ImageView dstView{m_offImages[0]};
+        const DkImageRect srcRect{0, 0, 0,
+                                  static_cast<uint32_t>(fullW),
+                                  static_cast<uint32_t>(fullH), 1};
+        const DkImageRect dstRect{0, 0, 0,
+                                  static_cast<uint32_t>(outW),
+                                  static_cast<uint32_t>(outH), 1};
+        m_uploadCmdbuf.blitImage(srcView, srcRect, dstView, dstRect, 0);
+        m_uploadCmdbuf.barrier(DkBarrier_Full, DkInvalidateFlags_Image);
+        srcView = dk::ImageView{m_offImages[0]};
+    } else {
+        dk::ImageView dstView{tempImage};
+        const DkImageRect rect{0, 0, 0,
+                               static_cast<uint32_t>(fullW),
+                               static_cast<uint32_t>(fullH), 1};
+        m_uploadCmdbuf.blitImage(srcView, rect, dstView, rect, 0);
+        m_uploadCmdbuf.barrier(DkBarrier_Full, DkInvalidateFlags_Image);
+        srcView = dstView;
+    }
+
+    const DkImageRect copyRect{0, 0, 0,
+                               static_cast<uint32_t>(outW),
+                               static_cast<uint32_t>(outH), 1};
+    m_uploadCmdbuf.copyImageToBuffer(
+        srcView, copyRect,
+        DkCopyBuf{staging.getGpuAddr(), 0, 0});
+
+    // Force a 3D-engine sync so the copy finishes before CPU reads.
+    // See deko3d notes on copyImageToBuffer + L2 invalidation.
+    const uint32_t threedNop = 0x80000040u;
+    m_uploadCmdbuf.replayCmds({threedNop});
+    m_uploadCmdbuf.barrier(DkBarrier_None, DkInvalidateFlags_L2Cache);
+
+    m_queue.submitCommands(m_uploadCmdbuf.finishList());
+    m_queue.waitIdle();
+
+    outRgba.resize(byteSize);
+    std::memcpy(outRgba.data(), staging.getCpuAddr(), byteSize);
+    return true;
+}
+
 void GpuDevice::waitIdle() {
     if (m_queue) m_queue.waitIdle();
 }
