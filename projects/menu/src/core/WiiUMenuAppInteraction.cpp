@@ -915,20 +915,13 @@ bool WiiUMenuApp::focusTitle(uint64_t titleId) {
 }
 
 void WiiUMenuApp::markSuspendedIcon(uint64_t titleId) {
-    if (!m_grid)
-        return;
-    for (auto& icon : m_grid->allIcons())
-        icon->setSuspended(titleId != 0 && icon->titleId() == titleId);
+    setSuspendedIconVisuals(titleId);
     if (titleId != 0)
         focusTitle(titleId);
 
-    if (auto* cur = m_grid->focusManager().current()) {
+    if (auto* cur = m_grid ? m_grid->focusManager().current() : nullptr) {
         auto* icon = static_cast<GlossyIcon*>(cur);
-        if (m_launcher.isAppSuspended(icon->titleId())) {
-            m_titlePill->setText(icon->title());
-        } else {
-            m_titlePill->setText(icon->title());
-        }
+        m_titlePill->setText(icon->title());
     }
 }
 

@@ -160,7 +160,10 @@ private:
                              std::uint64_t titleId,
                              const std::string& launchTitle);
 #endif
-    void scheduleLeaveCapture(std::function<void()> afterCapture);
+    void scheduleLeaveCapture(std::function<void()> afterCapture,
+                              std::uint64_t previewSuspendedTitleId = 0);
+    /// Visual-only suspended outline for leave-frame capture (no focus move).
+    void setSuspendedIconVisuals(std::uint64_t titleId);
     LeaveFrameSession captureLeaveSession() const;
     bool saveLeaveFrame(nxui::Renderer& ren);
     void restoreLeaveSession();

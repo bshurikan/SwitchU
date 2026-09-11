@@ -341,9 +341,16 @@ bool WiiUMenuApp::presentInitialFrame(nxui::Renderer& ren) {
 #endif
 }
 
-void WiiUMenuApp::scheduleLeaveCapture(std::function<void()> afterCapture) {
+void WiiUMenuApp::scheduleLeaveCapture(std::function<void()> afterCapture,
+                                       std::uint64_t previewSuspendedTitleId) {
     // Only title launch/resume should call this. System applets leave the last
     // title snapshot in place so AppletReturn keeps a matching splash+session.
+    //
+    // Preview the launching title as suspended before this frame renders so the
+    // captured splash matches HOME after return (pulse on the new open title).
+    if (previewSuspendedTitleId != 0)
+        setSuspendedIconVisuals(previewSuspendedTitleId);
+
     if (m_leaveCapturePending) {
         if (!afterCapture)
             return;
@@ -361,6 +368,13 @@ void WiiUMenuApp::scheduleLeaveCapture(std::function<void()> afterCapture) {
     }
     m_leaveCapturePending = true;
     m_leaveCaptureAfter = std::move(afterCapture);
+}
+
+void WiiUMenuApp::setSuspendedIconVisuals(std::uint64_t titleId) {
+    if (!m_grid)
+        return;
+    for (auto& icon : m_grid->allIcons())
+        icon->setSuspended(titleId != 0 && icon->titleId() == titleId);
 }
 
 LeaveFrameSession WiiUMenuApp::captureLeaveSession() const {
@@ -2992,7 +3006,7 @@ void WiiUMenuApp::activateApplication(GlossyIcon* source, AppEntry* entry,
                     m_widgetStore.save();
                     m_launcher.resumeApplication();
                 });
-        });
+        }, titleId);
         return;
     }
 
@@ -3034,7 +3048,7 @@ void WiiUMenuApp::activateApplication(GlossyIcon* source, AppEntry* entry,
                     m_widgetStore.save();
                     m_launcher.launchApplication(id, selectedUid);
                 });
-        });
+        }, titleId);
     };
 
     if (entry) {
