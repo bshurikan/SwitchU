@@ -28,8 +28,8 @@ public:
 
     float musicFadeProgress() const { // between 0 and 1, where 0 is the initial state
         if (!m_playing) return 1.f;
-        const float dur = m_resume ? kResumeTotalDur : kMusicFadeDur;
-        return std::min(m_timer / dur, 1.f);
+        const float duration = m_resume ? kResumeTotalDur : kMusicFadeDur;
+        return std::min(m_timer / duration, 1.f);
     }
 
 protected:

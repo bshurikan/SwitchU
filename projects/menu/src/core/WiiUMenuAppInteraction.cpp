@@ -625,6 +625,8 @@ bool WiiUMenuApp::activateEditModeTarget() {
     }
 
     if (m_openFolderId != 0 && m_editHeldTitleId < kFolderTitleIdPrefix) {
+        // Folder order lives in folders.json, not the HOME layoutSlots swap.
+        // Same-folder drops swap in place; inbound drops still insert.
         const std::uint32_t targetFolderId = m_openFolderId;
         if (!m_folderStore.placeTitle(targetFolderId, m_editHeldTitleId,
                                       static_cast<std::size_t>(target)) ||
@@ -915,20 +917,13 @@ bool WiiUMenuApp::focusTitle(uint64_t titleId) {
 }
 
 void WiiUMenuApp::markSuspendedIcon(uint64_t titleId) {
-    if (!m_grid)
-        return;
-    for (auto& icon : m_grid->allIcons())
-        icon->setSuspended(titleId != 0 && icon->titleId() == titleId);
+    setSuspendedIconVisuals(titleId);
     if (titleId != 0)
         focusTitle(titleId);
 
-    if (auto* cur = m_grid->focusManager().current()) {
+    if (auto* cur = m_grid ? m_grid->focusManager().current() : nullptr) {
         auto* icon = static_cast<GlossyIcon*>(cur);
-        if (m_launcher.isAppSuspended(icon->titleId())) {
-            m_titlePill->setText(icon->title());
-        } else {
-            m_titlePill->setText(icon->title());
-        }
+        m_titlePill->setText(icon->title());
     }
 }
 
@@ -961,6 +956,9 @@ void WiiUMenuApp::closeActiveOverlays() {
 }
 
 nxui::Widget* WiiUMenuApp::focusRoot() {
+    if (m_leaveCaptureDeferred) return nullptr;
+    if (m_leaveCapturePending) return nullptr;
+    if (leaveSplashActive()) return nullptr;
     if (m_launchAnim && m_launchAnim->isPlaying()) return nullptr;
     if (m_folderCaptureRequested) return nullptr;
     if (m_progressDialog && m_progressDialog->isActive()) return m_progressDialog.get();
@@ -1450,8 +1448,17 @@ void WiiUMenuApp::handleTouch() {
 
         float dx = input.touchDeltaX();
         float dy = input.touchDeltaY();
-        if (std::abs(dx) > kSwipeThreshold && std::abs(dx) > std::abs(dy) * 1.5f)
+        if (std::abs(dx) > kSwipeThreshold && std::abs(dx) > std::abs(dy) * 1.5f) {
             flipPage(dx < 0 ? 1 : -1);
+        } else if (m_openFolderId != 0
+                   && m_touchHitIndex < 0
+                   && std::abs(dx) < 20.f && std::abs(dy) < 20.f
+                   && m_grid
+                   && m_grid->hitTest(input.touchX(), input.touchY()) < 0) {
+            // Tap anywhere that isn't an icon (dimmed margins left/right/above/below,
+            // and empty gaps) to leave — mirrors B, including edit-mode keep-move.
+            closeFolder(m_editMode);
+        }
         m_touchHitIndex = -1;
         m_touchEditDragActive = false;
     }
