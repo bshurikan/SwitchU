@@ -7,6 +7,7 @@
 #include <nxui/core/I18n.hpp>
 #include "DebugLog.hpp"
 #include "bluetooth/BluetoothManager.hpp"
+#include "LeaveFrameCache.hpp"
 #include <switch.h>
 #ifdef SWITCHU_MENU
 #include "smi_commands.hpp"
@@ -304,6 +305,218 @@ void WiiUMenuApp::setStartupStatus(const switchu::smi::SystemStatus& status, boo
     m_fastReturnRequested = fastReturn || status.suspended_app_id != 0;
 }
 #endif
+
+bool WiiUMenuApp::presentInitialFrame(nxui::Renderer& ren) {
+#ifdef SWITCHU_MENU
+    if (!m_fastReturnRequested)
+        return false;
+
+    LeaveFrameImage image;
+    if (LeaveFrameCache::load(m_leaveSession, image) && image.valid()
+        && m_leaveSplashTex.loadFromPixels(app().gpu(), ren,
+                                           image.rgba.data(), image.width, image.height)) {
+        ren.drawTexture(&m_leaveSplashTex, {0.f, 0.f, 1280.f, 720.f});
+        m_leaveSplashDrawn = true;
+        m_leaveSplashPhase = LeaveSplashPhase::Hold;
+        m_leaveSplashHoldRemaining = kLeaveSplashHoldDur;
+        m_leaveSplashFade = 1.f;
+        m_leaveMotionFreezePending = true;
+        DebugLog::log("[leave] splash %dx%d page=%d folder=%u focus=%016lX",
+                      image.width, image.height, m_leaveSession.page,
+                      m_leaveSession.openFolderId,
+                      static_cast<unsigned long>(m_leaveSession.focusTitleId));
+        return true;
+    }
+
+    // No cached frame — still avoid pure black while onCreate runs.
+    ren.drawRect({0.f, 0.f, 1280.f, 720.f}, nxui::Color(0.07f, 0.12f, 0.18f, 1.f));
+    m_leaveSplashDrawn = true;
+    m_leaveSplashPhase = LeaveSplashPhase::None;
+    m_leaveSplashFade = 0.f;
+    DebugLog::log("[leave] splash fallback solid");
+    return true;
+#else
+    (void)ren;
+    return false;
+#endif
+}
+
+void WiiUMenuApp::scheduleLeaveCapture(std::function<void()> afterCapture,
+                                       std::uint64_t previewSuspendedTitleId) {
+    // Only title launch/resume should call this. System applets leave the last
+    // title snapshot in place so AppletReturn keeps a matching splash+session.
+    //
+    // Preview the launching title as suspended before this frame renders so the
+    // captured splash matches HOME after return (pulse on the new open title).
+    if (previewSuspendedTitleId != 0)
+        setSuspendedIconVisuals(previewSuspendedTitleId);
+
+    if (m_leaveCapturePending) {
+        if (!afterCapture)
+            return;
+        if (m_leaveCaptureAfter) {
+            auto prev = std::move(m_leaveCaptureAfter);
+            m_leaveCaptureAfter = [prev = std::move(prev),
+                                   next = std::move(afterCapture)]() mutable {
+                if (prev) prev();
+                if (next) next();
+            };
+        } else {
+            m_leaveCaptureAfter = std::move(afterCapture);
+        }
+        return;
+    }
+    m_leaveCapturePending = true;
+    m_leaveCaptureAfter = std::move(afterCapture);
+}
+
+void WiiUMenuApp::setSuspendedIconVisuals(std::uint64_t titleId) {
+    if (!m_grid)
+        return;
+    for (auto& icon : m_grid->allIcons())
+        icon->setSuspended(titleId != 0 && icon->titleId() == titleId);
+}
+
+LeaveFrameSession WiiUMenuApp::captureLeaveSession() const {
+    LeaveFrameSession session;
+    session.valid = true;
+    session.openFolderId = m_openFolderId;
+    session.page = m_grid ? m_grid->currentPage() : 0;
+    session.focusTitleId = 0;
+
+    if (auto* cur = focusManager().current()) {
+        if (cur->tag() == "glossy_icon")
+            session.focusTitleId = static_cast<const GlossyIcon*>(cur)->titleId();
+    }
+    if (session.focusTitleId == 0 && m_grid) {
+        const int idx = m_grid->focusedGlobalIndex();
+        const auto& icons = m_grid->allIcons();
+        if (idx >= 0 && idx < static_cast<int>(icons.size()) && icons[idx])
+            session.focusTitleId = icons[idx]->titleId();
+    }
+    return session;
+}
+
+bool WiiUMenuApp::saveLeaveFrame(nxui::Renderer& ren) {
+    std::vector<std::uint8_t> rgba;
+    int width = 0;
+    int height = 0;
+    if (!ren.downloadFramebufferRgba(rgba, width, height, false)) {
+        DebugLog::log("[leave] framebuffer download failed");
+        return false;
+    }
+
+    const LeaveFrameSession session = captureLeaveSession();
+    if (!LeaveFrameCache::save(session, rgba.data(), width, height)) {
+        DebugLog::log("[leave] cache write failed");
+        return false;
+    }
+
+    DebugLog::log("[leave] saved %dx%d page=%d folder=%u focus=%016lX",
+                  width, height, session.page, session.openFolderId,
+                  static_cast<unsigned long>(session.focusTitleId));
+    return true;
+}
+
+void WiiUMenuApp::onAfterPresent(nxui::Renderer& ren) {
+    if (!m_leaveCapturePending)
+        return;
+
+    m_leaveCapturePending = false;
+    saveLeaveFrame(ren);
+    if (m_leaveCaptureAfter) {
+        auto after = std::move(m_leaveCaptureAfter);
+        m_leaveCaptureAfter = {};
+        after();
+    }
+}
+
+void WiiUMenuApp::restoreLeaveSession() {
+    if (!m_leaveSession.valid || !m_grid)
+        return;
+
+    const LeaveFrameSession session = m_leaveSession;
+    m_leaveSession.valid = false;
+
+    if (session.openFolderId != 0 && m_folderStore.find(session.openFolderId)) {
+        m_requestedFolderId = session.openFolderId;
+        m_folderOpenFocusTitleId = session.focusTitleId;
+        openCapturedFolder();
+        DebugLog::log("[leave] restored folder=%u focus=%016lX",
+                      session.openFolderId,
+                      static_cast<unsigned long>(session.focusTitleId));
+        return;
+    }
+
+    if (session.page > 0)
+        m_grid->setPage(session.page);
+
+    if (session.focusTitleId != 0) {
+        const int idx = findTitleIndex(session.focusTitleId);
+        if (idx >= 0 && m_grid->focusGlobalIndex(idx)) {
+            if (auto* focused = m_grid->focusManager().current())
+                focusManager().setFocus(focused);
+        }
+    }
+
+    DebugLog::log("[leave] restored page=%d focus=%016lX",
+                  session.page, static_cast<unsigned long>(session.focusTitleId));
+}
+
+bool WiiUMenuApp::leaveSplashActive() const {
+    return m_leaveSplashPhase != LeaveSplashPhase::None;
+}
+
+void WiiUMenuApp::setLeaveMotionFrozen(bool frozen) {
+    if (m_leaveMotionFrozen == frozen)
+        return;
+    m_leaveMotionFrozen = frozen;
+
+    if (m_background)
+        m_background->setMotionPaused(frozen);
+    if (m_cursor)
+        m_cursor->setMotionPaused(frozen);
+    if (m_pointerCursor)
+        m_pointerCursor->setMotionPaused(frozen);
+    if (m_grid) {
+        for (auto& icon : m_grid->allIcons()) {
+            if (icon)
+                icon->setMotionPaused(frozen);
+        }
+    }
+}
+
+void WiiUMenuApp::updateLeaveSplashHandoff(float dt) {
+    if (m_leaveMotionFreezePending && m_background) {
+        setLeaveMotionFrozen(true);
+        m_leaveMotionFreezePending = false;
+        // Snap the cursor so the live frame under the splash matches focus.
+        if (m_cursor && focusManager().current()) {
+            m_cursor->moveTo(focusManager().current()->focusRect().expanded(4.f), 0.f);
+            m_cursor->setVisible(true);
+        }
+    }
+
+    if (m_leaveSplashPhase == LeaveSplashPhase::Hold) {
+        m_leaveSplashHoldRemaining -= dt;
+        if (m_leaveSplashHoldRemaining <= 0.f) {
+            m_leaveSplashHoldRemaining = 0.f;
+            m_leaveSplashPhase = LeaveSplashPhase::Fade;
+            DebugLog::log("[leave] splash crossfade begin");
+        }
+        return;
+    }
+
+    if (m_leaveSplashPhase == LeaveSplashPhase::Fade) {
+        m_leaveSplashFade = std::max(0.f, m_leaveSplashFade - dt / kLeaveSplashFadeDur);
+        if (m_leaveSplashFade <= 0.f) {
+            m_leaveSplashFade = 0.f;
+            m_leaveSplashPhase = LeaveSplashPhase::None;
+            setLeaveMotionFrozen(false);
+            DebugLog::log("[leave] splash handoff complete");
+        }
+    }
+}
 
 bool WiiUMenuApp::onCreate() {
     const std::uint64_t initStartTick = armGetSystemTick();
@@ -2782,16 +2995,18 @@ void WiiUMenuApp::activateApplication(GlossyIcon* source, AppEntry* entry,
                                       const std::string& launchTitle) {
     if (!source || titleId == 0) return;
     if (m_launcher.isAppSuspended(titleId)) {
-        m_audio.playSfx(Sfx::LaunchGame);
-        m_launchAnim->start(source->focusRect(), source->texture(),
-            source->cornerRadius(), m_theme.panelBase, m_theme.panelBorder,
-            0, {}, nullptr,
-            [this, titleId, launchTitle]() {
-                m_widgetStore.recordLaunch(titleId, launchTitle,
-                    static_cast<std::int64_t>(std::time(nullptr)));
-                m_widgetStore.save();
-                m_launcher.resumeApplication();
-            });
+        scheduleLeaveCapture([this, source, titleId, launchTitle]() {
+            m_audio.playSfx(Sfx::LaunchGame);
+            m_launchAnim->start(source->focusRect(), source->texture(),
+                source->cornerRadius(), m_theme.panelBase, m_theme.panelBorder,
+                0, {}, nullptr,
+                [this, titleId, launchTitle]() {
+                    m_widgetStore.recordLaunch(titleId, launchTitle,
+                        static_cast<std::int64_t>(std::time(nullptr)));
+                    m_widgetStore.save();
+                    m_launcher.resumeApplication();
+                });
+        }, titleId);
         return;
     }
 
@@ -2823,14 +3038,17 @@ void WiiUMenuApp::activateApplication(GlossyIcon* source, AppEntry* entry,
     const nxui::Color border = m_theme.panelBorder;
     auto startLaunch = [this, frame, texture, radius, base, border,
                         titleId, launchTitle](AccountUid uid) {
-        m_audio.playSfx(Sfx::LaunchGame);
-        m_launchAnim->start(frame, texture, radius, base, border, titleId, uid,
-            [this, launchTitle](std::uint64_t id, AccountUid selectedUid) {
-                m_widgetStore.recordLaunch(id, launchTitle,
-                    static_cast<std::int64_t>(std::time(nullptr)));
-                m_widgetStore.save();
-                m_launcher.launchApplication(id, selectedUid);
-            });
+        scheduleLeaveCapture([this, frame, texture, radius, base, border,
+                              titleId, launchTitle, uid]() {
+            m_audio.playSfx(Sfx::LaunchGame);
+            m_launchAnim->start(frame, texture, radius, base, border, titleId, uid,
+                [this, launchTitle](std::uint64_t id, AccountUid selectedUid) {
+                    m_widgetStore.recordLaunch(id, launchTitle,
+                        static_cast<std::int64_t>(std::time(nullptr)));
+                    m_widgetStore.save();
+                    m_launcher.launchApplication(id, selectedUid);
+                });
+        }, titleId);
     };
 
     if (entry) {
@@ -3051,131 +3269,11 @@ std::shared_ptr<GlossyIcon> WiiUMenuApp::makeIcon(const AppEntry& entry) {
 
     GlossyIcon* raw = icon.get();
     icon->setOnActivate([this, raw]() {
-        uint64_t tid = raw->titleId();
-        if (m_launcher.isAppSuspended(tid)) {
-            m_audio.playSfx(Sfx::LaunchGame);
-            nxui::Rect   fr   = raw->focusRect();
-            const nxui::Texture* tex = raw->texture();
-            float  cr   = raw->cornerRadius();
-            nxui::Color  base = m_theme.panelBase;
-            nxui::Color  bord = m_theme.panelBorder;
-            m_launchAnim->start(fr, tex, cr, base, bord, 0, {},
-                nullptr,
-                [this, tid, title = raw->title()]() {
-                    m_widgetStore.recordLaunch(tid, title,
-                        static_cast<std::int64_t>(std::time(nullptr)));
-                    m_widgetStore.save();
-                    m_launcher.resumeApplication();
-                });
-        } else {
-            AppEntry* entry = nullptr;
-            int entryIndex = findTitleIndex(tid);
-            if (entryIndex >= 0)
-                entry = &m_model.at(entryIndex);
-            if (entry && !entry->isLaunchable()) {
-                m_audio.playSfx(Sfx::ModalShow);
-                m_dialogReturnFocus = raw;
-                std::string reason;
-                auto& i18n = nxui::I18n::instance();
-                if (entry->isGameCardNotInserted())
-                    reason = i18n.tr("error.gamecard_not_inserted", "Game card is not inserted.");
-                else if (entry->needsVerify())
-                    reason = i18n.tr("error.needs_verify", "Game data needs verification.");
-                else if (entry->needsUpdate())
-                    reason = i18n.tr("error.needs_update", "A required update is available.");
-                else if (!entry->hasContents())
-                    reason = i18n.tr("error.no_contents", "Game data is missing.");
-                else
-                    reason = i18n.tr("error.cannot_launch", "This game cannot be launched.");
-                m_dialog->show(
-                    i18n.tr("error.title", "Cannot Launch"),
-                    reason,
-                    {{i18n.tr("button.ok", "OK"), [this]() {}, true}},
-                    0, {}
-                );
-                focusManager().setFocus(m_dialog.get());
-                return;
-            }
-
-            nxui::Rect   fr   = raw->focusRect();
-            const nxui::Texture* tex = raw->texture();
-            float  cr   = raw->cornerRadius();
-            nxui::Color  base = m_theme.panelBase;
-            nxui::Color  bord = m_theme.panelBorder;
-            const std::string launchTitle = raw->title();
-            auto startLaunch = [this, fr, tex, cr, base, bord, tid, launchTitle](AccountUid uid) {
-                m_audio.playSfx(Sfx::LaunchGame);
-                m_launchAnim->start(fr, tex, cr, base, bord, tid, uid,
-                    [this, launchTitle](uint64_t id, AccountUid u) {
-                        m_widgetStore.recordLaunch(id, launchTitle,
-                            static_cast<std::int64_t>(std::time(nullptr)));
-                        m_widgetStore.save();
-                        m_launcher.launchApplication(id, u);
-                    });
-            };
-            if (entry) {
-                if (!entry->startupUserKnown) {
-                    entry->startupUserAccount = 1;
-                    entry->startupUserAccountOption = 0;
-                    entry->userRequired = true;
-                }
-                DebugLog::log("[launcher] user decision tid=%016lX startup_user=%u option=%u interactive_user=%d",
-                              tid,
-                              (unsigned)entry->startupUserAccount,
-                              (unsigned)entry->startupUserAccountOption,
-                              entry->userRequired ? 1 : 0);
-
-                if (entry->startupUserAccount == 0) {
-                    AccountUid emptyUid = {};
-                    DebugLog::log("[launcher] skipping user select: NACP StartupUserAccount=None");
-                    startLaunch(emptyUid);
-                    return;
-                }
-
-                if (m_config.defaultProfileEnabled) {
-                    AccountUid defaultUid = {};
-                    if (hexToAccountUid(m_config.defaultProfileUid, defaultUid)) {
-                        DebugLog::log("[launcher] skipping user select: default profile configured uid[0]=0x%016lX uid[1]=0x%016lX",
-                                      defaultUid.uid[0], defaultUid.uid[1]);
-                        startLaunch(defaultUid);
-                        return;
-                    }
-                    DebugLog::log("[launcher] default profile enabled but uid is invalid");
-                }
-
-                AccountUid silentUid = {};
-                const bool networkRequired = entry->startupUserAccount == 2;
-                Result silentRc = accountTrySelectUserWithoutInteraction(&silentUid, networkRequired);
-                DebugLog::log("[launcher] TrySelectUserWithoutInteraction network_required=%d rc=0x%X uid_valid=%d uid[0]=0x%016lX uid[1]=0x%016lX",
-                              networkRequired ? 1 : 0,
-                              silentRc,
-                              accountUidIsValid(&silentUid) ? 1 : 0,
-                              silentUid.uid[0],
-                              silentUid.uid[1]);
-                if (R_SUCCEEDED(silentRc) && accountUidIsValid(&silentUid)) {
-                    DebugLog::log("[launcher] skipping user select: silent account selection succeeded");
-                    startLaunch(silentUid);
-                    return;
-                }
-
-                if (!entry->userRequired) {
-                    AccountUid emptyUid = {};
-                    DebugLog::log("[launcher] skipping user select fallback: startup_user=%u option=%u did not require interactive picker",
-                                  (unsigned)entry->startupUserAccount,
-                                  (unsigned)entry->startupUserAccountOption);
-                    startLaunch(emptyUid);
-                    return;
-                }
-            }
-            if (m_userSelect) {
-                bool usersLoaded = m_userSelect->loadUsers(app().gpu(), app().renderer());
-                DebugLog::log("[UserSelect] lazy load result=%d", usersLoaded ? 1 : 0);
-                if (usersLoaded)
-                    m_audio.playSfx(Sfx::ModalShow);
-            }
-            m_userSelect->showUserSelect([startLaunch](AccountUid uid) { startLaunch(uid); });
-            focusManager().setFocus(m_userSelect.get());
-        }
+        AppEntry* appEntry = nullptr;
+        const int entryIndex = findTitleIndex(raw->titleId());
+        if (entryIndex >= 0)
+            appEntry = &m_model.at(entryIndex);
+        activateApplication(raw, appEntry, raw->titleId(), raw->title());
     });
 #else
     icon->setOnActivate([this]() {
@@ -3362,9 +3460,15 @@ void WiiUMenuApp::buildGrid() {
         updateCursor();
     });
 
-    int initialPage = 0;
+    // Prefer the leave-frame session from the last title launch/resume so the
+    // live UI matches the splash. System applets do not rewrite that cache.
+    bool restoredLeaveSession = false;
 #ifdef SWITCHU_MENU
-    if (m_launcher.suspendedTitleId() != 0) {
+    if (m_leaveSession.valid) {
+        restoreLeaveSession();
+        restoredLeaveSession = true;
+    } else if (m_launcher.suspendedTitleId() != 0) {
+        int initialPage = 0;
         int suspendedIndex = findTitleIndex(m_launcher.suspendedTitleId());
         if (suspendedIndex >= 0 && m_grid->iconsPerPage() > 0)
             initialPage = suspendedIndex / m_grid->iconsPerPage();
@@ -3607,10 +3711,23 @@ void WiiUMenuApp::buildGrid() {
     root.addChild(m_contentLayer);
     root.addChild(m_overlayLayer);
 
-    if (!focusTitle(m_launcher.suspendedTitleId())) {
+#ifdef SWITCHU_MENU
+    // Leave-session restore already placed page/folder/focus to match the
+    // title splash. Calling focusTitle(suspended) afterward would reopen a
+    // folder under a mismatched root splash when returning from applets.
+    if (!restoredLeaveSession) {
+        if (!focusTitle(m_launcher.suspendedTitleId())) {
+            if (auto* firstIcon = m_grid->focusManager().current())
+                focusManager().setFocus(firstIcon);
+        }
+    } else if (!focusManager().current()) {
         if (auto* firstIcon = m_grid->focusManager().current())
             focusManager().setFocus(firstIcon);
     }
+#else
+    if (auto* firstIcon = m_grid->focusManager().current())
+        focusManager().setFocus(firstIcon);
+#endif
     updateCursor();
     showFocusedSteamGridDbArtwork();
     m_themeRenderDebugFrames = 12;
@@ -3918,6 +4035,9 @@ void WiiUMenuApp::finalizeRefresh() {
 #endif
 
 void WiiUMenuApp::onUpdate(float dt) {
+    updateLeaveSplashHandoff(dt);
+    const float motionDt = m_leaveMotionFrozen ? 0.f : dt;
+
     // Widget-owned images are intentionally managed before recording the next
     // frame. This is the only safe point to retire Deko textures from pages
     // that have left the screen and to warm the next page.
@@ -4540,7 +4660,7 @@ void WiiUMenuApp::onUpdate(float dt) {
         }
     }
 
-    nxui::AnimationManager::instance().update(dt);
+    nxui::AnimationManager::instance().update(motionDt);
 
     // In dynamic-line mode the focused widget itself is moving. Sample its
     // interpolated display rectangle every frame so the focus ring remains
@@ -5110,6 +5230,13 @@ void WiiUMenuApp::onRender(nxui::Renderer& ren) {
             armTicksToNs(armGetSystemTick() - m_fastReturnStartupTick) / 1'000'000ULL);
         DebugLog::log("[first-frame] fast HOME return rendered in %lums", elapsedMs);
         m_fastReturnStartupTick = 0;
+    }
+    if (leaveSplashActive() && m_leaveSplashTex.valid()) {
+        const float alpha = (m_leaveSplashPhase == LeaveSplashPhase::Hold)
+            ? 1.f
+            : m_leaveSplashFade;
+        ren.drawTexture(&m_leaveSplashTex, {0.f, 0.f, 1280.f, 720.f},
+                        nxui::Color::white().withAlpha(alpha));
     }
     if (m_returnFadeTimer > 0.f) {
         float alpha = m_returnFadeTimer / kReturnFadeInDur;
