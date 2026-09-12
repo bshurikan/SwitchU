@@ -35,6 +35,8 @@ public:
 
     void setSuspended(bool s)     { m_suspended = s; }
     bool isSuspended() const      { return m_suspended; }
+    void setMotionPaused(bool paused) { m_motionPaused = paused; }
+    bool motionPaused() const { return m_motionPaused; }
 
     void setIsGameCard(bool gc)     { m_isGameCard = gc; }
     bool isGameCard() const         { return m_isGameCard; }
@@ -129,6 +131,7 @@ private:
     bool        m_focused = false;
     bool        m_focusable = true;
     bool        m_suspended = false;
+    bool        m_motionPaused = false;
     bool        m_isGameCard = false;
     bool        m_notLaunchable = false;
     nxui::Color m_loadingColor = nxui::Color::white();

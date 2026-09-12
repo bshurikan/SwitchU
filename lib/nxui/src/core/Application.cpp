@@ -52,8 +52,11 @@ bool Application::initialize() {
 
     // Present one clean frame immediately so that stale framebuffer
     // content from a previous process is never visible on screen.
+    // Activities may replace the default black with a leave-frame splash.
     m_gpu.beginFrame();
     m_renderer->beginFrame();
+    if (m_activity)
+        m_activity->presentInitialFrame(*m_renderer);
     m_renderer->endFrame();
     m_gpu.endFrame();
 
@@ -220,6 +223,7 @@ void Application::run() {
                 m_activity->onRender(*m_renderer);
                 m_renderer->endFrame();
                 m_gpu.endFrame();
+                m_activity->onAfterPresent(*m_renderer);
             } else {
                 // Yield CPU while another app owns the foreground.
                 svcSleepThread(100000000LL); // 100 ms
