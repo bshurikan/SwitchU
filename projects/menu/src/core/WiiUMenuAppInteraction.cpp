@@ -956,6 +956,7 @@ void WiiUMenuApp::closeActiveOverlays() {
 }
 
 nxui::Widget* WiiUMenuApp::focusRoot() {
+    if (m_leaveCaptureDeferred) return nullptr;
     if (m_leaveCapturePending) return nullptr;
     if (leaveSplashActive()) return nullptr;
     if (m_launchAnim && m_launchAnim->isPlaying()) return nullptr;

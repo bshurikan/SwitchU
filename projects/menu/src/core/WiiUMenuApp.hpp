@@ -159,9 +159,13 @@ private:
     void activateApplication(GlossyIcon* source, AppEntry* entry,
                              std::uint64_t titleId,
                              const std::string& launchTitle);
+    void resumeSuspendedApplication(std::uint64_t titleId,
+                                    const std::string& launchTitle);
 #endif
     void scheduleLeaveCapture(std::function<void()> afterCapture,
                               std::uint64_t previewSuspendedTitleId = 0);
+    bool hasActiveLeaveCaptureOverlay() const;
+    void pollDeferredLeaveCapture();
     /// Visual-only suspended outline for leave-frame capture (no focus move).
     void setSuspendedIconVisuals(std::uint64_t titleId);
     LeaveFrameSession captureLeaveSession() const;
@@ -522,6 +526,9 @@ private:
 
     bool m_leaveCapturePending = false;
     std::function<void()> m_leaveCaptureAfter;
+    bool m_leaveCaptureDeferred = false;
+    std::function<void()> m_leaveCaptureDeferredAfter;
+    std::uint64_t m_leaveCaptureDeferredSuspendedTitleId = 0;
     LeaveFrameSession m_leaveSession;
     nxui::Texture m_leaveSplashTex;
     enum class LeaveSplashPhase { None, Hold, Fade };

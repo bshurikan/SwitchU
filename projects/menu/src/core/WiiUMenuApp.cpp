@@ -343,13 +343,31 @@ bool WiiUMenuApp::presentInitialFrame(nxui::Renderer& ren) {
 
 void WiiUMenuApp::scheduleLeaveCapture(std::function<void()> afterCapture,
                                        std::uint64_t previewSuspendedTitleId) {
-    // Only title launch/resume should call this. System applets leave the last
-    // title snapshot in place so AppletReturn keeps a matching splash+session.
-    //
     // Preview the launching title as suspended before this frame renders so the
     // captured splash matches HOME after return (pulse on the new open title).
     if (previewSuspendedTitleId != 0)
         setSuspendedIconVisuals(previewSuspendedTitleId);
+
+    // User/profile/settings overlays animate out. Capturing the next frame
+    // immediately would persist the fading overlay instead of the HOME scene.
+    if (hasActiveLeaveCaptureOverlay()) {
+        m_leaveCaptureDeferred = true;
+        if (previewSuspendedTitleId != 0)
+            m_leaveCaptureDeferredSuspendedTitleId = previewSuspendedTitleId;
+        if (afterCapture) {
+            if (m_leaveCaptureDeferredAfter) {
+                auto previous = std::move(m_leaveCaptureDeferredAfter);
+                m_leaveCaptureDeferredAfter = [previous = std::move(previous),
+                                               next = std::move(afterCapture)]() mutable {
+                    if (previous) previous();
+                    if (next) next();
+                };
+            } else {
+                m_leaveCaptureDeferredAfter = std::move(afterCapture);
+            }
+        }
+        return;
+    }
 
     if (m_leaveCapturePending) {
         if (!afterCapture)
@@ -368,6 +386,31 @@ void WiiUMenuApp::scheduleLeaveCapture(std::function<void()> afterCapture,
     }
     m_leaveCapturePending = true;
     m_leaveCaptureAfter = std::move(afterCapture);
+}
+
+bool WiiUMenuApp::hasActiveLeaveCaptureOverlay() const {
+    return (m_userSelect && m_userSelect->isActive())
+        || (m_contextMenu && m_contextMenu->isActive())
+        || (m_dialog && m_dialog->isActive())
+        || (m_progressDialog && m_progressDialog->isActive())
+        || (m_settings && m_settings->isActive())
+        || (m_themeShop && m_themeShop->isActive())
+        || (m_gameOptions && m_gameOptions->isActive())
+        || (m_folderOptions && m_folderOptions->isActive())
+        || (m_controllerTest && m_controllerTest->isActive())
+        || (m_steamGridDbPicker && m_steamGridDbPicker->isActive());
+}
+
+void WiiUMenuApp::pollDeferredLeaveCapture() {
+    if (!m_leaveCaptureDeferred || hasActiveLeaveCaptureOverlay())
+        return;
+
+    auto afterCapture = std::move(m_leaveCaptureDeferredAfter);
+    const std::uint64_t previewTitleId = m_leaveCaptureDeferredSuspendedTitleId;
+    m_leaveCaptureDeferred = false;
+    m_leaveCaptureDeferredAfter = {};
+    m_leaveCaptureDeferredSuspendedTitleId = 0;
+    scheduleLeaveCapture(std::move(afterCapture), previewTitleId);
 }
 
 void WiiUMenuApp::setSuspendedIconVisuals(std::uint64_t titleId) {
@@ -401,7 +444,7 @@ bool WiiUMenuApp::saveLeaveFrame(nxui::Renderer& ren) {
     std::vector<std::uint8_t> rgba;
     int width = 0;
     int height = 0;
-    if (!ren.downloadFramebufferRgba(rgba, width, height, false)) {
+    if (!ren.downloadFramebufferRgba(rgba, width, height, true)) {
         DebugLog::log("[leave] framebuffer download failed");
         return false;
     }
@@ -843,7 +886,7 @@ void WiiUMenuApp::appendAddUserButton() {
     add->setOnActivate([this]() {
         m_audio.playSfx(Sfx::Activate);
 #ifdef SWITCHU_MENU
-        m_launcher.launchUserCreator();
+        scheduleLeaveCapture([this]() { m_launcher.launchUserCreator(); });
 #endif
     });
     m_userAvatarButtons.push_back(add);
@@ -940,7 +983,7 @@ void WiiUMenuApp::loadNextUserAvatar() {
     avatar->setOnActivate([this, uid]() {
         m_audio.playSfx(Sfx::Activate);
 #ifdef SWITCHU_MENU
-        m_launcher.launchUserPage(uid);
+        scheduleLeaveCapture([this, uid]() { m_launcher.launchUserPage(uid); });
 #endif
     });
 
@@ -2990,23 +3033,27 @@ void WiiUMenuApp::closeFolder(bool preserveEditMode) {
 }
 
 #ifdef SWITCHU_MENU
+void WiiUMenuApp::resumeSuspendedApplication(std::uint64_t titleId,
+                                             const std::string& launchTitle) {
+    if (titleId == 0 || !m_launchAnim)
+        return;
+    scheduleLeaveCapture([this, titleId, launchTitle]() {
+        m_audio.playSfx(Sfx::LaunchGame);
+        m_launchAnim->startResume([this, titleId, launchTitle]() {
+            m_widgetStore.recordLaunch(titleId, launchTitle,
+                static_cast<std::int64_t>(std::time(nullptr)));
+            m_widgetStore.save();
+            m_launcher.resumeApplication();
+        });
+    }, titleId);
+}
+
 void WiiUMenuApp::activateApplication(GlossyIcon* source, AppEntry* entry,
                                       std::uint64_t titleId,
                                       const std::string& launchTitle) {
     if (!source || titleId == 0) return;
     if (m_launcher.isAppSuspended(titleId)) {
-        scheduleLeaveCapture([this, source, titleId, launchTitle]() {
-            m_audio.playSfx(Sfx::LaunchGame);
-            m_launchAnim->start(source->focusRect(), source->texture(),
-                source->cornerRadius(), m_theme.panelBase, m_theme.panelBorder,
-                0, {}, nullptr,
-                [this, titleId, launchTitle]() {
-                    m_widgetStore.recordLaunch(titleId, launchTitle,
-                        static_cast<std::int64_t>(std::time(nullptr)));
-                    m_widgetStore.save();
-                    m_launcher.resumeApplication();
-                });
-        }, titleId);
+        resumeSuspendedApplication(titleId, launchTitle);
         return;
     }
 
@@ -3513,9 +3560,15 @@ void WiiUMenuApp::buildGrid() {
 
     SidebarManager::Actions sidebarActions;
 #ifdef SWITCHU_MENU
-    sidebarActions.onAlbum       = [this]() { m_launcher.launchAlbum(); };
-    sidebarActions.onMiiEditor   = [this]() { m_launcher.launchMiiEditor(); };
-    sidebarActions.onControllers = [this]() { m_launcher.launchControllerPairing(); };
+    sidebarActions.onAlbum = [this]() {
+        scheduleLeaveCapture([this]() { m_launcher.launchAlbum(); });
+    };
+    sidebarActions.onMiiEditor = [this]() {
+        scheduleLeaveCapture([this]() { m_launcher.launchMiiEditor(); });
+    };
+    sidebarActions.onControllers = [this]() {
+        scheduleLeaveCapture([this]() { m_launcher.launchControllerPairing(); });
+    };
 #else
     sidebarActions.onAlbum       = [this]() { m_audio.playSfx(Sfx::Activate); };
     sidebarActions.onMiiEditor   = [this]() { m_audio.playSfx(Sfx::Activate); };
@@ -4036,6 +4089,7 @@ void WiiUMenuApp::finalizeRefresh() {
 
 void WiiUMenuApp::onUpdate(float dt) {
     updateLeaveSplashHandoff(dt);
+    pollDeferredLeaveCapture();
     const float motionDt = m_leaveMotionFrozen ? 0.f : dt;
 
     // Widget-owned images are intentionally managed before recording the next
@@ -4359,7 +4413,7 @@ void WiiUMenuApp::onUpdate(float dt) {
 
     if (m_pendingNetConnect) {
         m_pendingNetConnect = false;
-        m_launcher.launchNetConnect();
+        scheduleLeaveCapture([this]() { m_launcher.launchNetConnect(); });
         return;
     }
 
