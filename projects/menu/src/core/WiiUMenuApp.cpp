@@ -445,7 +445,7 @@ bool WiiUMenuApp::saveLeaveFrame(nxui::Renderer& ren) {
     std::vector<std::uint8_t> rgba;
     int width = 0;
     int height = 0;
-    if (!ren.downloadFramebufferRgba(rgba, width, height, true)) {
+    if (!ren.downloadFramebufferRgba(rgba, width, height, false)) {
         DebugLog::log("[leave] framebuffer download failed");
         return false;
     }
@@ -3186,7 +3186,9 @@ nxui::Texture* WiiUMenuApp::folderCoverTexture(std::uint64_t titleId) {
     if (data.empty() ||
         !tex->loadFromMemory(app().gpu(), app().renderer(), data.data(), data.size(), 192) ||
         !tex->valid()) {
-        m_folderCoverCache.emplace(titleId, nullptr);
+        // Icon data can be temporarily unavailable during an application-list
+        // refresh. Do not negative-cache the failure or this folder would keep
+        // its placeholder until the menu is restarted.
         return nullptr;
     }
     nxui::Texture* raw = tex.get();
