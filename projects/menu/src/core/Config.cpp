@@ -54,6 +54,17 @@ bool AppConfig::load() {
     readJsonOpt(j, "musicEnabled", musicEnabled);
     readJsonOpt(j, "musicVolume", musicVolume);
     readJsonOpt(j, "sfxVolume", sfxVolume);
+    readJsonOpt(j, "musicTrackIndex", musicTrackIndex);
+    readJsonOpt(j, "musicPositionSeconds", musicPositionSeconds);
+    readJsonOpt(j, "musicShuffle", musicShuffle);
+    readJsonOpt(j, "musicRepeatMode", musicRepeatMode);
+    musicPlaylistOrder.clear();
+    if (auto it = j.find("musicPlaylistOrder"); it != j.end() && it->is_array()) {
+        for (const auto& item : *it) {
+            if (item.is_string())
+                musicPlaylistOrder.push_back(item.get<std::string>());
+        }
+    }
     readJsonOpt(j, "gridColumns", gridColumns);
     readJsonOpt(j, "gridRows", gridRows);
     {
@@ -66,6 +77,7 @@ bool AppConfig::load() {
     }
     readJsonOpt(j, "actionHintStyle", actionHintStyle);
     readJsonOpt(j, "cursorMotionMode", cursorMotionMode);
+    readJsonOpt(j, "pageTransitionMode", pageTransitionMode);
     readJsonOpt(j, "uiLanguageOverride", uiLanguageOverride);
     readJsonOpt(j, "soundPreset", soundPreset);
     readJsonOpt(j, "defaultProfileEnabled", defaultProfileEnabled);
@@ -78,6 +90,9 @@ bool AppConfig::load() {
     readJsonOpt(j, "accessibilitySpeakPosition", accessibilitySpeakPosition);
     readJsonOpt(j, "accessibilitySpeechRate", accessibilitySpeechRate);
     readJsonOpt(j, "steamGridDbEnabled", steamGridDbEnabled);
+    readJsonOpt(j, "steamGridDbShowInGrid", steamGridDbShowInGrid);
+    readJsonOpt(j, "steamGridDbShowInDynamicLine", steamGridDbShowInDynamicLine);
+    readJsonOpt(j, "steamGridDbShowInFolders", steamGridDbShowInFolders);
     readJsonOpt(j, "steamGridDbApiKey", steamGridDbApiKey);
     readJsonOpt(j, "sortMode", sortMode);
     readJsonOpt(j, "lastOpenedSequence", lastOpenedSequence);
@@ -113,6 +128,7 @@ bool AppConfig::load() {
     if (actionHintStyle != "panel" && actionHintStyle != "capsules")
         actionHintStyle = "capsules";
     cursorMotionMode = std::clamp(cursorMotionMode, 0, 1);
+    pageTransitionMode = std::clamp(pageTransitionMode, 0, 1);
     if (uiLanguageOverride.empty()) uiLanguageOverride = "auto";
     if (soundPreset.empty()) soundPreset = "wiiu";
     if (!defaultProfileEnabled) defaultProfileUid.clear();
@@ -171,11 +187,17 @@ bool AppConfig::save() const {
     j["musicEnabled"] = musicEnabled;
     j["musicVolume"] = musicVolume;
     j["sfxVolume"] = sfxVolume;
+    j["musicTrackIndex"] = musicTrackIndex;
+    j["musicPositionSeconds"] = musicPositionSeconds;
+    j["musicShuffle"] = musicShuffle;
+    j["musicRepeatMode"] = std::clamp(musicRepeatMode, 0, 2);
+    j["musicPlaylistOrder"] = musicPlaylistOrder;
     j["gridColumns"] = std::clamp(gridColumns, 1, 8);
     j["gridRows"] = std::clamp(gridRows, 1, 5);
     j["appLayoutMode"] = (appLayoutMode == AppLayoutMode::DynamicLine) ? "dynamic_line" : "grid";
     j["actionHintStyle"] = actionHintStyle == "panel" ? "panel" : "capsules";
     j["cursorMotionMode"] = std::clamp(cursorMotionMode, 0, 1);
+    j["pageTransitionMode"] = std::clamp(pageTransitionMode, 0, 1);
     j["uiLanguageOverride"] = uiLanguageOverride;
     j["soundPreset"] = soundPreset;
     j["defaultProfileEnabled"] = defaultProfileEnabled;
@@ -188,6 +210,9 @@ bool AppConfig::save() const {
     j["accessibilitySpeakPosition"] = accessibilitySpeakPosition;
     j["accessibilitySpeechRate"] = std::clamp(accessibilitySpeechRate, 120, 320);
     j["steamGridDbEnabled"] = steamGridDbEnabled;
+    j["steamGridDbShowInGrid"] = steamGridDbShowInGrid;
+    j["steamGridDbShowInDynamicLine"] = steamGridDbShowInDynamicLine;
+    j["steamGridDbShowInFolders"] = steamGridDbShowInFolders;
     j["steamGridDbApiKey"] = steamGridDbApiKey;
     j["sortMode"] = std::clamp(sortMode, 0, 2);
     j["lastOpenedSequence"] = lastOpenedSequence;
@@ -243,7 +268,7 @@ bool AppConfig::save() const {
     }
     // No commit here: save() is submitted to the thread pool, so this ran on a
     // worker while the main thread was also writing. Committing an fs session
-    // from two threads at once is its own hazard, and the author's build —
-    // which does not corrupt — commits nowhere.
+    // from two threads at once is its own hazard, and the author's build -
+    // which does not corrupt - commits nowhere.
     return true;
 }

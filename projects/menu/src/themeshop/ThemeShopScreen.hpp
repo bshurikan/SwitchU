@@ -48,6 +48,7 @@ public:
     void onActionHintStyleChange(IntCb cb) { m_actionHintStyleCb = std::move(cb); }
     void onAutoThemeOpen(VoidCb cb) { m_autoThemeOpenCb = std::move(cb); }
     void onCursorMotionModeChange(IntCb cb) { m_cursorMotionModeCb = std::move(cb); }
+    void onPageTransitionModeChange(IntCb cb) { m_pageTransitionModeCb = std::move(cb); }
     void onNextTrack(VoidCb cb)          { m_nextTrackCb = std::move(cb); }
     void onThemeShopApply(StringCb cb)   { m_themeShopApplyCb = std::move(cb); }
     void onThemeShopDelete(StringCb cb)  { m_themeShopDeleteCb = std::move(cb); }
@@ -74,6 +75,9 @@ public:
     }
     void setCursorMotionModeState(int mode) {
         m_cursorMotionMode = std::clamp(mode, 0, 1);
+    }
+    void setPageTransitionModeState(int mode) {
+        m_pageTransitionMode = std::clamp(mode, 0, 1);
     }
 
     void setThreadPool(nxui::ThreadPool* pool);
@@ -212,6 +216,7 @@ private:
     IntCb m_actionHintStyleCb;
     VoidCb m_autoThemeOpenCb;
     IntCb m_cursorMotionModeCb;
+    IntCb m_pageTransitionModeCb;
     VoidCb m_nextTrackCb;
     StringCb m_themeShopApplyCb;
     StringCb m_themeShopDeleteCb;
@@ -228,6 +233,7 @@ private:
     int m_actionHintStyle = 1;
     std::string m_autoThemeSummary;
     int m_cursorMotionMode = 0;
+    int m_pageTransitionMode = 0;
     std::string m_searchQuery;
     std::vector<ThemeShopEntry> m_allThemeShopEntries;
     std::vector<ThemeShopEntry> m_themeShopEntries;

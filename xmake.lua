@@ -72,7 +72,9 @@ target("nxui")
     end
 
     if is_mode("release") then
-        add_cxflags("-O3", "-flto=auto", "-ffast-math", {force = true})
+        -- LTO disabled: -flto=auto stalled local release links and produced
+        -- "Input file doesn't fit ELF header" failures on some toolchains.
+        add_cxflags("-O3", "-ffast-math", {force = true})
     end
 target_end()
 
@@ -149,7 +151,17 @@ target("atmosphere-stratosphere")
     if not is_plat("cross") then return end
 
     on_build(function (target)
+        import("scripts.stamp")
+        local source_dir = path.join(os.projectdir(), "lib/Atmosphere-libs")
+        local library = path.join(source_dir,
+            "libstratosphere/lib/nintendo_nx_arm64_armv8a/release/libstratosphere.a")
+        local revision = stamp.revision(source_dir)
+        if os.isfile(library) and stamp.matches("libstratosphere", revision) then
+            cprint("${color.build.target}cached${clear} libstratosphere")
+            return
+        end
         os.execv("make", {"-C", "lib/Atmosphere-libs/libstratosphere", "nx_release"})
+        stamp.write("libstratosphere", revision)
     end)
 target_end()
 
@@ -182,8 +194,7 @@ target("SwitchU")
     add_syslinks("nx")
 
     if is_mode("release") then
-        add_cxflags("-O3", "-flto=auto", "-ffast-math", {force = true})
-        add_ldflags("-flto=auto", {force = true})
+        add_cxflags("-O3", "-ffast-math", {force = true})
     end
 
     add_defines(version_define)
@@ -198,6 +209,15 @@ target("SwitchU")
 
         if not os.isdir(source_dir) then
             raise("eSpeak NG submodule is missing: " .. source_dir)
+        end
+
+        import("scripts.stamp")
+        local revision = stamp.revision(source_dir)
+        if os.isfile(path.join(data_dir, "phondata")) and
+           os.isfile(path.join(data_dir, "fr_dict")) and
+           stamp.matches("espeak-ng-data", revision) then
+            cprint("${color.build.target}cached${clear} eSpeak NG data")
+            return
         end
 
         cprint("${color.build.target}generating${clear} eSpeak NG data")
@@ -218,6 +238,7 @@ target("SwitchU")
            not os.isfile(path.join(data_dir, "fr_dict")) then
             raise("eSpeak NG data generation did not produce required runtime files")
         end
+        stamp.write("espeak-ng-data", revision)
     end)
 
     if has_config("homebrew") then
@@ -274,8 +295,7 @@ target("SwitchU-Manager")
     add_defines(version_define)
 
     if is_mode("release") then
-        add_cxflags("-O3", "-flto=auto", "-ffast-math", {force = true})
-        add_ldflags("-flto=auto", {force = true})
+        add_cxflags("-O3", "-ffast-math", {force = true})
     end
 
     before_build(function(target)
@@ -329,8 +349,7 @@ target("switchu-daemon")
     add_syslinks("nx")
 
     if is_mode("release") then
-        add_cxflags("-O3", "-flto=auto", "-ffast-math", {force = true})
-        add_ldflags("-flto=auto", {force = true})
+        add_cxflags("-O3", "-ffast-math", {force = true})
     end
 
     set_values("switch.name",    "switchu-daemon")

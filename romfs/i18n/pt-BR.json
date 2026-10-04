@@ -53,9 +53,6 @@
       "region_south_korea": "Coreia do Sul",
       "auto_update": "Atualização Automática",
       "error_reporting": "Relatório de Erros",
-      "default_profile": "Default Profile",
-      "default_profile_desc": "Launch games with this profile when possible.",
-      "default_profile_ask": "Ask each time",
       "clock_12h": "Relógio 12h",
       "clock_12h_desc": "Mostra a hora no formato de 12 horas."
     },
@@ -94,6 +91,10 @@
       "cursor_motion_desc": "Escolha se o cursor de seleção desliza ou se move instantaneamente.",
       "cursor_translate": "Deslizar",
       "cursor_teleport": "Teletransportar",
+      "page_transition": "Transição de página",
+      "page_transition_desc": "Escolha se a troca de página desliza a grade ou a substitui instantaneamente.",
+      "page_translate": "Deslizar",
+      "page_teleport": "Teletransportar",
       "ui_wireframe": "Wireframe da UI",
       "ui_wireframe_desc": "Mostra os contornos de todos os widgets de caixa para depuração de layout."
     },

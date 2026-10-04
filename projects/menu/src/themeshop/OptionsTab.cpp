@@ -150,5 +150,25 @@ ThemeShopScreen::Tab themeshop::tabs::OptionsTab::build(ThemeShopScreen& screen)
         t.items.push_back(std::move(it));
     }
 
+    {
+        SettingItem it;
+        it.label = i18n.tr("settings.display.page_transition", "Page Transition");
+        it.type = ItemType::Selector;
+        it.description = i18n.tr(
+            "settings.display.page_transition_desc",
+            "Choose whether switching pages slides the grid or swaps it instantly.");
+        it.options = {
+            i18n.tr("settings.display.page_translate", "Translate"),
+            i18n.tr("settings.display.page_teleport", "Teleport")
+        };
+        it.intVal = std::clamp(screen.m_pageTransitionMode, 0, 1);
+        it.onChange = [&screen](SettingItem& self) {
+            screen.m_pageTransitionMode = std::clamp(self.intVal, 0, 1);
+            if (screen.m_pageTransitionModeCb)
+                screen.m_pageTransitionModeCb(screen.m_pageTransitionMode);
+        };
+        t.items.push_back(std::move(it));
+    }
+
     return t;
 }

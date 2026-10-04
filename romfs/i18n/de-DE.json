@@ -53,9 +53,6 @@
       "region_south_korea": "Südkorea",
       "auto_update": "Automatisches Update",
       "error_reporting": "Fehlerinformationen senden",
-      "default_profile": "Default Profile",
-      "default_profile_desc": "Launch games with this profile when possible.",
-      "default_profile_ask": "Ask each time",
       "clock_12h": "12-Stunden-Uhr",
       "clock_12h_desc": "Zeit im 12-Stunden-Format anzeigen."
     },
@@ -94,6 +91,10 @@
       "cursor_motion_desc": "Legt fest, ob der Auswahlcursor gleitet oder sofort springt.",
       "cursor_translate": "Gleiten",
       "cursor_teleport": "Springen",
+      "page_transition": "Seitenwechsel",
+      "page_transition_desc": "Legt fest, ob beim Seitenwechsel das Raster gleitet oder sofort wechselt.",
+      "page_translate": "Gleiten",
+      "page_teleport": "Springen",
       "ui_wireframe": "UI-Wireframe",
       "ui_wireframe_desc": "Umrisse aller Box-Widgets zur Layout-Fehlersuche anzeigen."
     },

@@ -886,6 +886,24 @@ static void requestPowerStateChange(const char* source, bool reboot) {
         appletStartShutdownSequence();
 }
 
+// Sleep is not a power-down: the process keeps running, the card stays mounted
+// and the daemon has to be alive on the other side to handle the wake. The menu
+// does need a handoff before the console stops responding. Left on its own it
+// keeps submitting frames, playing music and running its per-frame work for the
+// whole sleep, which is what flattened the battery in sleep mode.
+static void startSleepSequence(const char* source) {
+    switchu::FileLog::logCommit("[power] sleep requested source=%s menuActive=%d",
+                                source, daemon::menu_la::isActive() ? 1 : 0);
+    pushNotification(smi::MenuMessage::SleepSequence);
+    // Preserve the final state even if the sleep ends in a forced power loss.
+    switchu::commitSdCard("sleep");
+    // The handoff is cooperative: give the menu a couple of frames to stop
+    // presenting and pause its audio instead of relying on the sleep landing
+    // a frame later.
+    svcSleepThread(50'000'000ULL);
+    appletStartSleepSequence(true);
+}
+
 static void startPowerSequence(const char* source, smi::SystemMessage action) {
     cancelViewPolling(source);
     takeForegroundFromRunningApp(source);
@@ -894,7 +912,7 @@ static void startPowerSequence(const char* source, smi::SystemMessage action) {
     // workers here would leave notifications and metadata caching disabled
     // after wake, which is an unsafe side effect of the fork implementation.
     if (action == smi::SystemMessage::EnterSleep) {
-        appletStartSleepSequence(true);
+        startSleepSequence(source);
         return;
     }
 
@@ -1093,7 +1111,9 @@ static void handleAppletMessages() {
         // but must reacquire the foreground after wake. Keep our session state
         // in sync so the Wakeup path is allowed to call app::resume().
         daemon::app::onHomeSuspend();
-        appletStartSleepSequence(true);
+        // The console is going under on its own (idle plan or power button):
+        // the menu needs the same handoff as a menu-initiated sleep.
+        startSleepSequence("applet-sleep");
         break;
 
         case 26:

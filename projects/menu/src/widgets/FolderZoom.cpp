@@ -50,6 +50,11 @@ void FolderZoom::close(const nxui::Rect& tile, const nxui::Color& tint,
 }
 
 void FolderZoom::showStatic(const nxui::Rect& panel, const nxui::Color& tint) {
+    // Interrupting Closing without running onDone soft-locks the menu
+    // (m_folderClosing stays true). Refuse retarget while closing — callers
+    // should also skip, but keep this defensive.
+    if (m_state == State::Closing)
+        return;
     m_tint   = tint;
     m_state  = State::Open;
     m_onDone = {};

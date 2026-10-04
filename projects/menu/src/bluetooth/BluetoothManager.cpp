@@ -127,13 +127,21 @@ void ThreadFunc(void*) {
     while (g_threadRunning) {
         rc = eventWait(&g_connectionEvent, 500'000'000);
         if (R_FAILED(rc) && rc != KERNELRESULT(TimedOut)) {
+            // Only back off on a real error: an unconditional 1 ms sleep here
+            // woke this thread 1000 times a second for the whole session, which
+            // kept a core busy and defeated console sleep.
             DebugLog::log("[bt] eventWait error: 0x%x", rc);
-        } else {
-            ReloadConnected();
-            ReloadPaired();
-            ReloadDiscovered();
+            svcSleepThread(100'000'000);
+            continue;
         }
-        svcSleepThread(1'000'000);
+        if (R_FAILED(rc))
+            continue; // timed out: nothing changed
+        ReloadConnected();
+        ReloadPaired();
+        ReloadDiscovered();
+        // The service raises the event once per change; a short debounce keeps a
+        // burst (pair + connect + profile) from reading the state repeatedly.
+        svcSleepThread(50'000'000);
     }
 
     DebugLog::log("[bt] Thread exiting");

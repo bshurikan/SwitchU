@@ -10,11 +10,14 @@
 #include <cmath>
 #include <cstdio>
 #include <ctime>
+#include <filesystem>
 #include <unordered_set>
 #include <nxui/core/I18n.hpp>
 
 namespace {
 constexpr float kEditGhostMoveDuration = 0.20f;
+// How long a dragged game must rest on a folder tile before it opens.
+constexpr float kEditDragFolderHoldDelay = 0.55f;
 }
 
 bool WiiUMenuApp::isEditableIcon(nxui::Widget* w) const {
@@ -58,8 +61,8 @@ std::string WiiUMenuApp::accessibilityContextFor(nxui::Widget* w) const {
         if (btn.get() == w) return i18n.tr("accessibility.context.left_sidebar", "Left sidebar");
     for (const auto& btn : m_sidebar.rightButtons())
         if (btn.get() == w) return i18n.tr("accessibility.context.right_sidebar", "Right sidebar");
-    for (const auto& avatar : m_userAvatarButtons)
-        if (avatar.get() == w) return i18n.tr("accessibility.context.user_profiles", "User profiles");
+    if (m_profileLock && m_profileLock.get() == w)
+        return i18n.tr("accessibility.context.user_profiles", "User profiles");
     return {};
 }
 
@@ -142,14 +145,6 @@ std::string WiiUMenuApp::accessibilityPositionFor(nxui::Widget* w) const {
         return text;
     if (auto text = describeLinear(m_sidebar.rightButtons()); !text.empty())
         return text;
-
-    for (int i = 0; i < (int)m_userAvatarButtons.size(); ++i) {
-        if (m_userAvatarButtons[(size_t)i].get() == w) {
-            return std::to_string(i + 1) + " "
-                 + i18n.tr("accessibility.context.of", "of") + " "
-                 + std::to_string((int)m_userAvatarButtons.size());
-        }
-    }
 
     return {};
 }
@@ -260,6 +255,11 @@ void WiiUMenuApp::stopEditGhost() {
     m_editGhostTexture.reset();
     m_editGhostRectInit = false;
     m_editGhostPulse = 0.f;
+    m_editGhostTouchFollow = false;
+    m_editDragEdgeDir = 0;
+    m_editDragEdgeHold = 0.f;
+    m_editDragFolderHold = 0.f;
+    m_editDragFolderOpenWait = 0.f;
 }
 
 void WiiUMenuApp::detachEditSourceIcon() {
@@ -356,6 +356,95 @@ void WiiUMenuApp::syncEditPlacementAfterModelChange(bool preferEmptySlot) {
 void WiiUMenuApp::updateEditGhost(float dt) {
     if (!m_editMode || !m_editGhostIcon)
         return;
+
+    if (m_editGhostTouchFollow) {
+        // Free touch drag: keep the tile under the finger instead of snapping it
+        // to the grid slots (the tracked slot still drives the drop target and
+        // the cursor). Dragging past the grid's side edge flips pages, and
+        // holding there keeps flipping.
+        float w = m_editGhostTargetRect.width;
+        float h = m_editGhostTargetRect.height;
+        if (w <= 1.f || h <= 1.f) {
+            const nxui::Rect cur = m_editGhostIcon->rect();
+            w = cur.width;
+            h = cur.height;
+        }
+        const nxui::Rect r{m_editGhostTouchPos.x - w * 0.5f,
+                           m_editGhostTouchPos.y - h * 0.5f, w, h};
+        m_editGhostRect.setImmediate(r);
+        m_editGhostRectInit = true;
+        m_editGhostPulse += dt;
+        const float pulse = 0.80f + 0.08f * std::sin(m_editGhostPulse * 8.f);
+        m_editGhostIcon->setOpacity(pulse);
+        m_editGhostIcon->setPanelOpacity(std::min(1.f, pulse + 0.12f));
+        m_editGhostIcon->setScale(1.07f + 0.025f * std::sin(m_editGhostPulse * 7.f));
+        m_editGhostIcon->setRect(r);
+
+        if (m_grid && m_appLayoutMode != AppLayoutMode::DynamicLine) {
+            const nxui::Rect content = m_grid->contentRect();
+            constexpr float kEdgeZone = 48.f;
+            int dir = 0;
+            if (content.width > 0.f) {
+                if (m_editGhostTouchPos.x < content.x + kEdgeZone)
+                    dir = -1;
+                else if (m_editGhostTouchPos.x > content.x + content.width - kEdgeZone)
+                    dir = +1;
+            }
+            if (dir == 0) {
+                m_editDragEdgeDir = 0;
+                m_editDragEdgeHold = 0.f;
+            } else {
+                if (dir != m_editDragEdgeDir) {
+                    m_editDragEdgeDir = dir;
+                    m_editDragEdgeHold = 0.f;
+                }
+                m_editDragEdgeHold += dt;
+                constexpr float kEdgeHoldDelay = 0.45f;
+                if (m_editDragEdgeHold >= kEdgeHoldDelay) {
+                    m_editDragEdgeHold = 0.f;
+                    flipPage(dir);
+                }
+            }
+        }
+
+        // Resting a dragged game on a folder tile for a moment opens that
+        // folder, so the release can pick the exact slot inside instead of
+        // dropping blind on the tile. Slot tracking pauses while the folder
+        // swaps in, because the hits still belong to the root model.
+        if (m_editDragFolderOpenWait > 0.f) {
+            m_editDragFolderOpenWait -= dt;
+            if (m_openFolderId != 0)
+                m_editDragFolderOpenWait = 0.f;
+        }
+        const bool folderOpening = m_editDragFolderOpenWait > 0.f;
+        const bool canHoverOpen =
+            m_openFolderId == 0 && !folderOpening && !m_folderCaptureRequested &&
+            m_editHeldTitleId != 0 && m_editHeldTitleId < kFolderTitleIdPrefix &&
+            !switchu::widgets::isWidgetTitleId(m_editHeldTitleId) &&
+            m_editTargetIndex >= 0 && m_editTargetIndex < m_model.count();
+        if (canHoverOpen) {
+            const AppEntry hovered = m_model.at(m_editTargetIndex);
+            if (hovered.isFolder()) {
+                m_editDragFolderHold += dt;
+                if (m_editDragFolderHold >= kEditDragFolderHoldDelay) {
+                    m_editDragFolderHold = 0.f;
+                    m_editDragFolderOpenWait = 0.75f;
+                    // The slot index belongs to the root model that is about to
+                    // be replaced; clearing it lets the folder's rebuild pick
+                    // the first free slot for the carried ghost.
+                    m_editTargetIndex = -1;
+                    detachEditSourceIcon();
+                    unbindEditActions();
+                    requestOpenFolder(hovered.folderId);
+                }
+            } else {
+                m_editDragFolderHold = 0.f;
+            }
+        } else {
+            m_editDragFolderHold = 0.f;
+        }
+        return;
+    }
 
     bool discreteTarget = false;
     if (m_grid && m_editTargetIndex >= 0) {
@@ -659,6 +748,11 @@ bool WiiUMenuApp::commitEditModePlacement() {
             m_layoutDirty = true;
             applyDisplayModel(buildRootFolderModel(), m_editHeldTitleId, false);
             reattachEditSourceIcon();
+            // Both tiles traded places: glide each one across the gap the other
+            // left. Started after the rebuild, which force-visibles every icon.
+            m_grid->animateSwap(from, target,
+                                displacedTitleId != 0 ? target : -1,
+                                displacedTitleId != 0 ? displacedAnchor : -1);
             if (auto* focused = m_grid->focusManager().current()) {
                 focusManager().setFocus(focused);
                 if (focused->tag() == "glossy_icon")
@@ -705,6 +799,10 @@ bool WiiUMenuApp::commitEditModePlacement() {
         if (icon)
             icon->forceVisible();
     }
+    // Same-page swap inside a folder: the two icons glide past each other. The
+    // forced refresh above would cancel an earlier start, so arm it afterwards.
+    if (changed)
+        m_grid->animateSwap(from, target, target, from);
 
     if (auto* cur = m_grid->focusManager().current())
         focusManager().setFocus(cur);
@@ -722,9 +820,35 @@ bool WiiUMenuApp::activateEditModeTarget() {
     if (!m_editMode || !m_grid)
         return false;
 
-    const int target = m_editTargetIndex;
-    if (target < 0 || target >= m_model.count() || m_editHeldTitleId == 0)
+    if (m_editHeldTitleId == 0)
         return false;
+
+    int target = m_editTargetIndex;
+    if (target < 0 || target >= m_model.count()) {
+        // A touch release can arrive before the rebuilt model has claimed a slot
+        // for the carried ghost. Fall back to the first free slot so the gesture
+        // ends with a placement instead of stranding the move.
+        if (!m_touchEditDragActive && !m_editGhostTouchFollow)
+            return false;
+        // While the hover-opened folder is still swapping in, the model in hand
+        // is the old root one: any index read from it would be the wrong
+        // destination, so let the caller put the tile back instead.
+        if (m_editDragFolderOpenWait > 0.f)
+            return false;
+        target = -1;
+        for (int i = 0; i < m_model.count(); ++i) {
+            const auto& entry = m_model.at(i);
+            if (entry.kind == GridEntryKind::Empty ||
+                (entry.titleId == 0 &&
+                 entry.kind != GridEntryKind::WidgetContinuation)) {
+                target = i;
+                break;
+            }
+        }
+        if (target < 0)
+            return false;
+        m_editTargetIndex = target;
+    }
 
     const AppEntry targetEntry = m_model.at(target);
     if (m_openFolderId == 0 && targetEntry.isFolder() &&
@@ -733,6 +857,39 @@ bool WiiUMenuApp::activateEditModeTarget() {
         // intact made page-2+ folders keep an out-of-range target, which pinned
         // the edit ghost at (0,0) and blocked further movement (#95).
         m_editTargetIndex = -1;
+        if ((m_touchEditDragActive || m_editGhostTouchFollow) &&
+            !switchu::widgets::isWidgetTitleId(m_editHeldTitleId)) {
+            // Touch drag released on a folder tile: the game goes inside and
+            // the folder opens on it. Keeping the move alive here used to strand
+            // the gesture — the drag flags were cleared on touch-up while the
+            // ghost stayed afloat with no bound icon, so the tile could not be
+            // picked up again.
+            // Widgets are HOME-grid only: the folder model resolves titles from
+            // the app catalogue, so storing one there would hide it for good.
+            const std::uint32_t folderId = targetEntry.folderId;
+            const std::uint64_t titleId = m_editHeldTitleId;
+            const int originSlot = m_editOriginRootSlot;
+            if (!m_folderStore.placeTitle(folderId, titleId, 0) ||
+                !saveFoldersOrReport("place_in_folder")) {
+                // Folder full: reuse the carry flow so the move is not stranded
+                // — the ghost stays bound to the opened folder and B cancels it.
+                detachEditSourceIcon();
+                unbindEditActions();
+                requestOpenFolder(folderId);
+                return false;
+            }
+            if (originSlot >= 0 && originSlot < static_cast<int>(m_layoutSlots.size())) {
+                m_layoutSlots[static_cast<std::size_t>(originSlot)] = 0;
+                m_layoutDirty = true;
+            }
+            exitEditMode();
+            // Refresh the root grid first: the folder frame is captured from the
+            // current render, so the moved tile must already be gone from it.
+            // Focus lands on the folder tile, the anchor the folder returns to.
+            applyDisplayModel(buildRootFolderModel(), folderTitleId(folderId), false);
+            requestOpenFolder(folderId);
+            return true;
+        }
         detachEditSourceIcon();
         unbindEditActions();
         requestOpenFolder(targetEntry.folderId);
@@ -951,12 +1108,10 @@ void WiiUMenuApp::wireFocusCallback() {
             for (auto& btn : m_sidebar.rightButtons()) {
                 if (btn.get() == cur) { m_titlePill->setText(btn->label()); m_titlePill->setVisible(true); return; }
             }
-            for (auto& avatar : m_userAvatarButtons) {
-                if (avatar.get() == cur) {
-                    m_titlePill->setText(avatar->nickname());
-                    m_titlePill->setVisible(!avatar->nickname().empty());
-                    return;
-                }
+            if (m_profileLock && m_profileLock.get() == cur) {
+                m_titlePill->setText(m_profileLock->statusText());
+                m_titlePill->setVisible(true);
+                return;
             }
             m_titlePill->hideAnimated();
         } else {
@@ -984,8 +1139,7 @@ bool WiiUMenuApp::isCurrentFocusableWidget(nxui::Widget* w) const {
         if (btn.get() == w) return w->isFocusable();
     for (const auto& btn : m_sidebar.rightButtons())
         if (btn.get() == w) return w->isFocusable();
-    for (const auto& avatar : m_userAvatarButtons)
-        if (avatar.get() == w) return w->isFocusable();
+    if (m_profileLock && m_profileLock.get() == w) return w->isFocusable();
     if (m_grid)
         for (const auto& icon : m_grid->allIcons())
             if (icon.get() == w) return w->isFocusable();
@@ -1002,7 +1156,7 @@ int WiiUMenuApp::findTitleIndex(uint64_t titleId) const {
     return -1;
 }
 
-bool WiiUMenuApp::focusTitle(uint64_t titleId) {
+bool WiiUMenuApp::focusTitle(uint64_t titleId, bool instantFocus) {
     if (!m_grid)
         return false;
 
@@ -1018,7 +1172,7 @@ bool WiiUMenuApp::focusTitle(uint64_t titleId) {
     }
 
     int oldPage = m_grid->currentPage();
-    if (!m_grid->focusGlobalIndex(idx))
+    if (!m_grid->focusGlobalIndex(idx, instantFocus))
         return false;
 
     if (m_grid->currentPage() != oldPage || titleId != 0) {
@@ -1044,7 +1198,7 @@ void WiiUMenuApp::markSuspendedIcon(uint64_t titleId) {
     }
 }
 
-void WiiUMenuApp::closeActiveOverlays() {
+void WiiUMenuApp::closeActiveOverlays(bool closeFolders) {
     // Transfer input ownership before starting any exit animation. An overlay
     // that is still visually fading out must never win focusRoot().
     m_navigator.resetToHome();
@@ -1070,9 +1224,13 @@ void WiiUMenuApp::closeActiveOverlays() {
         m_folderOptions->hide();
     if (m_controllerTest && m_controllerTest->isActive())
         m_controllerTest->hide();
+    if (m_profileCarousel && m_profileCarousel->isActive())
+        m_profileCarousel->hide();
     if (m_steamGridDbPicker && m_steamGridDbPicker->isActive())
         m_steamGridDbPicker->hide();
-    if (m_openFolderId != 0)
+    // Returning from a suspended title must keep the open folder — closing then
+    // focusTitle(game) reopens it and re-captures a dimmed frosted backdrop.
+    if (closeFolders && m_openFolderId != 0)
         closeFolder();
 }
 
@@ -1101,6 +1259,8 @@ nxui::Widget* WiiUMenuApp::focusRoot() {
             return m_folderOptions ? m_folderOptions.get() : &rootBox();
         case switchu::navigation::Route::ControllerTest:
             return m_controllerTest ? m_controllerTest.get() : &rootBox();
+        case switchu::navigation::Route::ProfileSelect:
+            return m_profileCarousel ? m_profileCarousel.get() : &rootBox();
         case switchu::navigation::Route::AutoTheme:
             return m_autoThemeScreen ? m_autoThemeScreen.get() : &rootBox();
         case switchu::navigation::Route::Home:
@@ -1160,6 +1320,7 @@ void WiiUMenuApp::wireGlobalActions() {
             (m_gameOptions && m_gameOptions->isActive()) ||
             (m_folderOptions && m_folderOptions->isActive()) ||
             (m_controllerTest && m_controllerTest->isActive()) ||
+            (m_profileCarousel && m_profileCarousel->isActive()) ||
             (m_userSelect && m_userSelect->isActive()))
             return;
         if (m_openFolderId != 0 && !(m_dialog && m_dialog->isActive()))
@@ -1206,6 +1367,7 @@ void WiiUMenuApp::wireGlobalActions() {
             (m_gameOptions && m_gameOptions->isActive()) ||
             (m_folderOptions && m_folderOptions->isActive()) ||
             (m_controllerTest && m_controllerTest->isActive()) ||
+            (m_profileCarousel && m_profileCarousel->isActive()) ||
             (m_userSelect && m_userSelect->isActive())) {
             return;
         }
@@ -1308,6 +1470,15 @@ void WiiUMenuApp::showGameContextMenu(GlossyIcon* icon) {
     const auto currentSize = gameGridSize(titleId, AppLayoutMode::Grid);
     game.sizeIndex = currentSize == switchu::widgets::WidgetSize{2, 2}
         ? 2 : (currentSize == switchu::widgets::WidgetSize{2, 1} ? 1 : 0);
+    {
+        std::error_code ec;
+        game.hasHeroArt = std::filesystem::exists(
+            SteamGridDbManager::heroPath(titleId), ec);
+        ec.clear();
+        game.hasLogoArt = std::filesystem::exists(
+            SteamGridDbManager::logoPath(titleId), ec);
+        game.hasIconArt = SteamGridDbManager::hasIcon(titleId);
+    }
     m_gameOptions->setGame(game);
     m_gameOptions->onMove([this]() {
         if (m_gameOptions) m_gameOptions->hide();
@@ -1353,6 +1524,9 @@ void WiiUMenuApp::showGameContextMenu(GlossyIcon* icon) {
     m_gameOptions->onSelectArtwork([this](GameOptionsScreen::ArtworkKind kind) {
         openSteamGridDbPicker(kind);
     });
+    m_gameOptions->onClearArtwork([this, titleId](GameOptionsScreen::ArtworkKind kind) {
+        clearSteamGridDbArtwork(titleId, kind);
+    });
     m_audio.playSfx(Sfx::ModalShow);
     m_gameOptionsTitleId = titleId;
     m_navigator.navigate(switchu::navigation::Route::GameOptions);
@@ -1373,6 +1547,11 @@ void WiiUMenuApp::showFolderContextMenu(std::uint32_t folderId) {
     info.sizeIndex = folder->sizeIndex;
     info.styleIndex = m_config.folderStyle;
     info.showCover = m_config.folderShowCover;
+    info.hasCustomIcon = SteamGridDbManager::hasIcon(folderTitleId(folderId));
+    const std::uint64_t coverTitleId = info.hasCustomIcon
+        ? folderTitleId(folderId)
+        : switchu::folders::firstCoverTitleId(*folder);
+    info.cover = folderCoverTexture(coverTitleId);
     m_folderOptions->setFolder(info);
     m_folderOptions->onOpen([this, folderId]() {
         if (m_folderOptions) m_folderOptions->hide();
@@ -1435,6 +1614,36 @@ void WiiUMenuApp::showFolderContextMenu(std::uint32_t folderId) {
         });
         applyFolderCoversToIcons();
     });
+    m_folderOptions->onCustomIconSelect([this, folderId, name]() {
+        const std::uint64_t pseudo = folderTitleId(folderId);
+        openSteamGridDbPickerForTitle(pseudo, name,
+                                      GameOptionsScreen::ArtworkKind::Icon, name);
+    });
+    m_folderOptions->onCustomIconClear([this, folderId]() {
+        const std::uint64_t pseudo = folderTitleId(folderId);
+        clearSteamGridDbArtwork(pseudo, GameOptionsScreen::ArtworkKind::Icon);
+        // Refresh folder options state + cover textures.
+        if (m_folderOptions) {
+            FolderOptionsScreen::FolderInfo info = {};
+            if (const auto* folder = m_folderStore.find(folderId)) {
+                info.id = folder->id;
+                info.name = folder->name;
+                info.itemCount = static_cast<int>(folder->titleCount());
+                info.colorIndex = folder->colorIndex;
+                info.sizeIndex = folder->sizeIndex;
+                info.styleIndex = m_config.folderStyle;
+                info.showCover = m_config.folderShowCover;
+                info.hasCustomIcon = false;
+                info.cover = folderCoverTexture(
+                    switchu::folders::firstCoverTitleId(*folder));
+                m_folderOptions->setFolder(info);
+            }
+        }
+        if (m_openFolderId == 0)
+            applyDisplayModel(buildRootFolderModel(), folderTitleId(folderId), false);
+        else
+            applyFolderCoversToIcons();
+    });
     m_folderOptions->onDelete([this, folderId, name]() {
         auto& local = nxui::I18n::instance();
         m_dialogReturnFocus = m_folderOptions.get();
@@ -1472,12 +1681,8 @@ void WiiUMenuApp::handleTouch() {
 
     auto& input = app().input();
 
-    auto hitAvatar = [this](float x, float y) -> UserAvatarButton* {
-        for (auto& avatar : m_userAvatarButtons) {
-            if (avatar && avatar->isVisible() && avatar->hitTest(x, y))
-                return avatar.get();
-        }
-        return nullptr;
+    auto hitProfileLock = [this](float x, float y) {
+        return m_profileLock && m_profileLock->isVisible() && m_profileLock->hitTest(x, y);
     };
 
     auto focusTouchedIcon = [this](int localHit) -> GlossyIcon* {
@@ -1517,6 +1722,7 @@ void WiiUMenuApp::handleTouch() {
         float ty = input.touchY();
 
         m_touchArrowLeft = m_touchArrowRight = false;
+        m_touchBattery = false;
         if (m_arrowAnimLeft.show > 0.5f && pageArrowRect(true).expanded(12.f).contains(tx, ty)) {
             m_touchArrowLeft = true;
             m_touchHitIndex = -1;
@@ -1529,12 +1735,22 @@ void WiiUMenuApp::handleTouch() {
             return;
         }
 
-        m_touchAvatarTarget = hitAvatar(tx, ty);
-        m_touchAvatarWasFocused = m_touchAvatarTarget && (focusManager().current() == m_touchAvatarTarget);
-        if (m_touchAvatarTarget) {
+        // Whole battery pill opens Quick Settings (chevron = "more").
+        if (m_battery && m_battery->isVisible() && m_battery->hitTest(tx, ty)
+            && m_topHud && m_topHud->isVisible()) {
+            m_touchBattery = true;
+            m_touchHitIndex = -1;
+            return;
+        }
+
+        m_touchProfileLock = hitProfileLock(tx, ty);
+        m_touchProfileLockWasFocused = m_touchProfileLock &&
+            focusManager().current() == m_profileLock.get();
+        if (m_touchProfileLock) {
             m_touchHitIndex = -1;
             m_touchOnFocused = false;
             m_touchEditDragActive = false;
+            m_editGhostTouchFollow = false;
             return;
         }
 
@@ -1542,6 +1758,7 @@ void WiiUMenuApp::handleTouch() {
         m_touchHitIndex = hit;
         m_touchOnFocused = false;
         m_touchEditDragActive = false;
+        m_editGhostTouchFollow = false;
         if (hit >= 0) {
             auto icons = m_grid->pageIcons();
             if (hit < (int)icons.size())
@@ -1567,6 +1784,8 @@ void WiiUMenuApp::handleTouch() {
                 enterEditMode();
                 if (m_editMode) {
                     m_touchEditDragActive = true;
+                    m_editGhostTouchFollow = true;
+                    m_editGhostTouchPos = {input.touchX(), input.touchY()};
                     m_audio.playSfx(Sfx::Activate);
                     m_editGhostTargetRect = m_grid->gridSpanRect(
                         m_editTargetIndex,
@@ -1577,13 +1796,35 @@ void WiiUMenuApp::handleTouch() {
         }
 
         if (m_editMode && m_touchEditDragActive) {
-            int dragHit = m_grid->hitTest(input.touchX(), input.touchY());
+            // The dragged tile follows the finger; the slot under it is still
+            // tracked so the drop target and cursor update as before.
+            m_editGhostTouchFollow = true;
+            m_editGhostTouchPos = {input.touchX(), input.touchY()};
+            // While the grid swaps to the folder opened by the hover timer the
+            // hits still belong to the root model, so skip slot tracking until
+            // the folder model is live.
+            int dragHit = m_editDragFolderOpenWait > 0.f
+                ? -1 : m_grid->hitTest(input.touchX(), input.touchY());
             if (dragHit >= 0)
                 focusTouchedIcon(dragHit);
+            else
+                updateCursor();
         }
     }
 
     if (input.touchUp()) {
+        if (m_touchBattery) {
+            m_touchBattery = false;
+            float dx = input.touchDeltaX();
+            float dy = input.touchDeltaY();
+            if (std::abs(dx) < 20.f && std::abs(dy) < 20.f
+                && m_battery && m_battery->isVisible()
+                && m_battery->hitTest(input.touchX(), input.touchY())) {
+                openQuickSettings();
+            }
+            return;
+        }
+
         if (m_touchArrowLeft || m_touchArrowRight) {
             const bool left = m_touchArrowLeft;
             const bool wasAddHold = m_addPageTouchHold;
@@ -1595,27 +1836,37 @@ void WiiUMenuApp::handleTouch() {
             return;
         }
 
-        if (m_touchAvatarTarget) {
+        if (m_touchProfileLock) {
             float dx = input.touchDeltaX();
             float dy = input.touchDeltaY();
-            UserAvatarButton* avatar = m_touchAvatarTarget;
-            m_touchAvatarTarget = nullptr;
+            m_touchProfileLock = false;
             if (std::abs(dx) < 20.f && std::abs(dy) < 20.f &&
-                hitAvatar(input.touchX(), input.touchY()) == avatar)
+                hitProfileLock(input.touchX(), input.touchY()))
             {
-                focusManager().setFocus(avatar);
-                if (!m_touchAvatarWasFocused)
-                    avatar->activate();
+                focusManager().setFocus(m_profileLock.get());
+                if (!m_touchProfileLockWasFocused)
+                    m_profileLock->activate();
             }
-            m_touchAvatarWasFocused = false;
+            m_touchProfileLockWasFocused = false;
             return;
         }
 
         if (m_editMode && m_touchEditDragActive) {
+            const bool folderSwapPending = m_editDragFolderOpenWait > 0.f;
             bool changed = activateEditModeTarget();
+            // A release with no resolvable target (the hover-opened folder is
+            // still swapping in) must not leave move mode armed on a floating
+            // ghost: a touch user has no way to grab it again. Put it back.
+            if (!changed && folderSwapPending && m_editMode)
+                exitEditMode();
             m_audio.playSfx(changed ? Sfx::ConfirmPositive : Sfx::ModalHide);
             m_touchHitIndex = -1;
             m_touchEditDragActive = false;
+            m_editGhostTouchFollow = false;
+            m_editDragEdgeDir = 0;
+            m_editDragEdgeHold = 0.f;
+            m_editDragFolderHold = 0.f;
+            m_editDragFolderOpenWait = 0.f;
             return;
         }
 
@@ -1629,7 +1880,7 @@ void WiiUMenuApp::handleTouch() {
                    && m_grid
                    && m_grid->hitTest(input.touchX(), input.touchY()) < 0) {
             // Tap anywhere that isn't an icon (dimmed margins left/right/above/below,
-            // and empty gaps) to leave — mirrors B, including edit-mode keep-move.
+            // and empty gaps) to leave - mirrors B, including edit-mode keep-move.
             closeFolder(m_editMode, true);
         }
         m_touchHitIndex = -1;
@@ -1640,6 +1891,20 @@ void WiiUMenuApp::handleTouch() {
 #ifdef SWITCHU_MENU
 void WiiUMenuApp::handleSystemAction(SysAction a) {
     switch (a) {
+        case SysAction::HomeDismiss: {
+            // Physical HOME while already browsing the menu.
+            DebugLog::log("[pump] HomeDismiss -> close folder/overlays");
+            m_launcher.setAppHasForeground(false);
+            const std::uint32_t folderBefore = m_openFolderId;
+            closeActiveOverlays(true);
+            if (folderBefore != 0) {
+                // Land on the folder tile — never focusTitle(inner game) or the
+                // folder reopens and the frosted dim stacks.
+                focusTitle(folderTitleId(folderBefore));
+            }
+            showFocusedSteamGridDbArtwork(true);
+            break;
+        }
         case SysAction::HomeButton: {
             DebugLog::log("[pump] HomeButton -> UI update");
             m_launcher.setAppHasForeground(false);
@@ -1653,7 +1918,10 @@ void WiiUMenuApp::handleSystemAction(SysAction a) {
             refreshRecentActivityDuration();
             if (!m_widgetStore.save())
                 DebugLog::log("[widgets] recent activity duration could not be saved");
-            closeActiveOverlays();
+            // Keep an already-open folder — closing+refocus was reopening it and
+            // stacking FolderBackdrop dims on every HOME-from-title return.
+            closeActiveOverlays(false);
+            resumeMenuMusicAfterReturn();
             const bool hasActivityWidget = std::any_of(
                 m_widgetStore.all().begin(), m_widgetStore.all().end(),
                 [](const switchu::widgets::Widget& widget) {

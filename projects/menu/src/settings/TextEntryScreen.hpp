@@ -58,9 +58,7 @@ protected:
     void onContentRender(nxui::Renderer& ren) override;
 
 private:
-    // One key. `lower` and `upper` are the UTF-8 sequences the key produces; an
-    // action key leaves both empty and carries an Action instead.
-    enum class Action { None, Shift, Page, Space, Backspace, Accept };
+    enum class Action { None, Shift, Page, Space, Backspace, Accept, Cancel };
     struct Key {
         std::string lower;
         std::string upper;
@@ -68,16 +66,37 @@ private:
         int span = 1;
     };
 
+    struct Metrics {
+        float panelX = 96.f;
+        float panelY = 84.f;
+        float panelW = 1088.f;
+        float panelH = 552.f;
+        float inset = 16.f;
+        float keyGap = 2.f;
+        float rowHeight = 72.f;
+        float fieldTop = 86.f;
+        float fieldHeight = 58.f;
+        float keyboardTop = 156.f;
+        float keyRadius = 6.f;
+        float boardPad = 6.f;
+    };
+
     void buildLayout();
     void setupActions();
+    void applyPanelRect();
+    Metrics metrics() const;
     const std::vector<std::vector<Key>>& rows() const;
     nxui::Rect keyRect(int row, int column) const;
+    nxui::Rect cancelChipRect() const;
+    nxui::Rect keyboardBoardRect() const;
     void moveSelection(int dx, int dy);
     void togglePage();
     void pressSelected();
     void pressKey(const Key& key);
     void appendText(const std::string& utf8);
     void backspace();
+    void beginBackspaceHold();
+    void updateBackspaceHold(float dt, bool held);
     void announceSelection();
     std::string displayText() const;
     std::string keyLabel(const Key& key) const;
@@ -89,8 +108,6 @@ private:
 
     bool m_active = false;
     bool m_animatingOut = false;
-    // The blurred copy of whatever is behind the panel is taken once per open;
-    // nothing under a modal keyboard moves while it owns input.
     bool m_backdropReady = false;
     bool m_accepted = false;
     nxui::AnimatedFloat m_alpha;
@@ -98,6 +115,7 @@ private:
     Request m_request;
     std::string m_text;
     bool m_shift = false;
+    bool m_shiftLock = false;
     int m_page = 0;          // 0 letters, 1 symbols and accented vowels
     int m_row = 0;
     int m_column = 0;
@@ -105,6 +123,10 @@ private:
     int m_touchRow = -1;
     int m_touchColumn = -1;
     bool m_waitingForTouchRelease = false;
+    bool m_touchOnCancelChip = false;
+    bool m_backspaceHeld = false;
+    float m_backspaceHoldTime = 0.f;
+    float m_backspaceRepeatLeft = 0.f;
 
     std::vector<std::vector<Key>> m_letters;
     std::vector<std::vector<Key>> m_symbols;
@@ -117,8 +139,4 @@ private:
     StringCallback m_accessibilityCb;
 
     static constexpr int kColumns = 10;
-    static constexpr float kPanelX = 96.f;
-    static constexpr float kPanelY = 84.f;
-    static constexpr float kPanelW = 1088.f;
-    static constexpr float kPanelH = 552.f;
 };

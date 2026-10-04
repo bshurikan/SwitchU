@@ -26,7 +26,6 @@ public:
     void onGridColumnsChange(IntCb cb)  { m_gridColumnsCb = std::move(cb); }
     void onGridRowsChange(IntCb cb)     { m_gridRowsCb = std::move(cb); }
     void onUiLanguageChange(StringCb cb) { m_uiLanguageCb = std::move(cb); }
-    void onDefaultProfileChange(StringCb cb) { m_defaultProfileCb = std::move(cb); }
     void onClockUse12HourChange(BoolCb cb) { m_clockUse12HourCb = std::move(cb); }
     void onAccessibilityEnabledChange(BoolCb cb) { m_accessibilityEnabledCb = std::move(cb); }
     void onAccessibilitySpeakHintsChange(BoolCb cb) { m_accessibilitySpeakHintsCb = std::move(cb); }
@@ -35,6 +34,9 @@ public:
     void onAccessibilitySpeechRateChange(IntCb cb) { m_accessibilitySpeechRateCb = std::move(cb); }
     void onNetConnect(VoidCb cb)        { m_netConnectCb = std::move(cb); }
     void onSteamGridDbEnabledChange(BoolCb cb) { m_steamGridDbEnabledCb = std::move(cb); }
+    void onSteamGridDbViewFlagsChange(std::function<void(bool, bool, bool)> cb) {
+        m_steamGridDbViewFlagsCb = std::move(cb);
+    }
     void onSteamGridDbApiKeyRequest(VoidCb cb) { m_steamGridDbApiKeyCb = std::move(cb); }
     void onSteamGridDbScrapeRequest(VoidCb cb) { m_steamGridDbScrapeCb = std::move(cb); }
     void onControllerPairing(VoidCb cb) { m_controllerPairingCb = std::move(cb); }
@@ -54,9 +56,6 @@ public:
     void setUiLanguageOverride(const std::string& tag) {
         m_uiLanguageOverride = tag.empty() ? "auto" : tag;
     }
-    void setDefaultProfileState(bool enabled, const std::string& uidHex) {
-        m_defaultProfileUid = enabled ? uidHex : std::string();
-    }
     void setClockUse12HourState(bool enabled) {
         m_clockUse12Hour = enabled;
     }
@@ -72,9 +71,15 @@ public:
         m_accessibilitySpeechRate = std::clamp(speechRate, 120, 320);
         setAccessibilitySpeechPreferences(speakHints, speakPosition);
     }
-    void setSteamGridDbState(bool enabled, bool hasApiKey) {
+    void setSteamGridDbState(bool enabled, bool hasApiKey,
+                             bool showInGrid = true,
+                             bool showInDynamicLine = true,
+                             bool showInFolders = true) {
         m_steamGridDbEnabled = enabled;
         m_steamGridDbHasApiKey = hasApiKey;
+        m_steamGridDbShowInGrid = showInGrid;
+        m_steamGridDbShowInDynamicLine = showInDynamicLine;
+        m_steamGridDbShowInFolders = showInFolders;
     }
     void setSteamGridDbProgress(bool running, bool finished, int completed, int total,
                                 int matched, int failed, const std::string& current,
@@ -111,7 +116,6 @@ private:
     IntCb m_gridColumnsCb;
     IntCb m_gridRowsCb;
     StringCb m_uiLanguageCb;
-    StringCb m_defaultProfileCb;
     BoolCb m_clockUse12HourCb;
     BoolCb m_accessibilityEnabledCb;
     BoolCb m_accessibilitySpeakHintsCb;
@@ -120,6 +124,7 @@ private:
     IntCb m_accessibilitySpeechRateCb;
     VoidCb m_netConnectCb;
     BoolCb m_steamGridDbEnabledCb;
+    std::function<void(bool, bool, bool)> m_steamGridDbViewFlagsCb;
     VoidCb m_steamGridDbApiKeyCb;
     VoidCb m_steamGridDbScrapeCb;
     VoidCb m_controllerPairingCb;
@@ -134,7 +139,6 @@ private:
     int m_gridColumns = 5;
     int m_gridRows = 3;
     std::string m_uiLanguageOverride = "auto";
-    std::string m_defaultProfileUid;
     bool m_clockUse12Hour = false;
     bool m_accessibilityEnabled = true;
     bool m_accessibilitySpeakHints = true;
@@ -142,6 +146,9 @@ private:
     bool m_accessibilitySpeakPosition = true;
     int m_accessibilitySpeechRate = 190;
     bool m_steamGridDbEnabled = true;
+    bool m_steamGridDbShowInGrid = true;
+    bool m_steamGridDbShowInDynamicLine = true;
+    bool m_steamGridDbShowInFolders = true;
     bool m_steamGridDbHasApiKey = false;
     bool m_steamGridDbRunning = false;
     bool m_steamGridDbFinished = false;

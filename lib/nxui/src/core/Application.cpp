@@ -212,6 +212,18 @@ void Application::run() {
         prevTick = nowTick;
         if (dt > 0.1f) dt = 0.016f;
 
+        if (m_sleeping) {
+            // The console is asleep: nothing is on screen, so stop submitting
+            // frames and stop touching input. The activity still gets a slow
+            // tick because that is where the sleep/wake notification from the
+            // daemon is read; anything else it does is skipped on its side.
+            if (m_activity)
+                m_activity->onUpdate(dt);
+            svcSleepThread(50'000'000ULL);
+            prevTick = armGetSystemTick();
+            continue;
+        }
+
         m_input.update();
         if (m_input.hasUserActivity()) {
             idleSeconds = 0.f;

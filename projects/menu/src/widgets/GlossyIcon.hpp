@@ -109,6 +109,10 @@ public:
     void startAppear(float delay);
     // Reverse of a tile appear: fly back into `target` while shrinking out.
     void startDisappear(const nxui::Rect& target, float delay, float dur);
+    // Travel into the laid-out slot from `from` without scaling or fading.
+    // Used when two tiles trade places and each one slides across the gap the
+    // other left behind.
+    void startGlideFrom(const nxui::Rect& from, float dur);
     void forceVisible();
 
     void setAppearOrigin(const nxui::Rect& origin) {

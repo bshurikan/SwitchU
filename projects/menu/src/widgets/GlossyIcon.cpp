@@ -531,6 +531,21 @@ void GlossyIcon::startDisappear(const nxui::Rect& target, float delay, float dur
     m_appearOpacity.set(0.f, dur, nxui::Easing::inCubic, delay);
 }
 
+void GlossyIcon::startGlideFrom(const nxui::Rect& from, float dur) {
+    // Reuse the appear-origin plumbing: while an origin is armed the tile keeps
+    // its full scale and simply lerps from that rect to its slot, so forcing the
+    // opacity to 1 makes it a pure translation.
+    m_appearing = false;
+    m_disappearing = false;
+    m_appearDelay = 0.f;
+    m_appearTimer = 0.f;
+    m_appearOrigin = from;
+    m_hasAppearOrigin = true;
+    m_appearOpacity.setImmediate(1.f);
+    m_animScale.setImmediate(0.f);
+    m_animScale.set(1.f, dur, nxui::Easing::outCubic);
+}
+
 void GlossyIcon::forceVisible() {
     m_appearing = false;
     m_disappearing = false;

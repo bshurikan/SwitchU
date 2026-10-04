@@ -425,7 +425,7 @@ nxui::Rect IconGrid::focusedDisplayRect() const {
     return {};
 }
 
-bool IconGrid::focusGlobalIndex(int idx) {
+bool IconGrid::focusGlobalIndex(int idx, bool instant) {
     if (idx < 0 || idx >= (int)m_allIcons.size())
         return false;
     if (!m_allIcons[idx] || !m_allIcons[idx]->isFocusable())
@@ -433,8 +433,14 @@ bool IconGrid::focusGlobalIndex(int idx) {
 
     if (m_layoutMode == AppLayoutMode::DynamicLine) {
         m_focus.setFocus(m_allIcons[idx].get());
-        m_lineScrollOffset.set(static_cast<float>(idx), kLineScrollDuration,
-                               nxui::Easing::outCubic);
+        // Opening or closing a folder rebuilds the model while the carousel
+        // still holds the offset of the other tree; animating from there would
+        // visibly scroll through the whole row, so snap instead.
+        if (instant)
+            m_lineScrollOffset.setImmediate(static_cast<float>(idx));
+        else
+            m_lineScrollOffset.set(static_cast<float>(idx), kLineScrollDuration,
+                                   nxui::Easing::outCubic);
         return true;
     }
 
@@ -527,6 +533,49 @@ void IconGrid::startAppearAnimation(const IconAppearOptions& opt) {
     }
 }
 
+void IconGrid::animateSwap(int heldPrevious, int heldCurrent,
+                           int displacedPrevious, int displacedCurrent) {
+    if (m_layoutMode != AppLayoutMode::Grid || m_sliding || m_bumping)
+        return;
+
+    const int count = static_cast<int>(m_allIcons.size());
+    const int perPage = std::max(1, iconsPerPage());
+    const int page = m_page;
+    const auto iconAt = [&](int index) -> GlossyIcon* {
+        if (index < 0 || index >= count)
+            return nullptr;
+        return m_allIcons[static_cast<std::size_t>(index)].get();
+    };
+    const auto onVisiblePage = [&](int index) {
+        return index >= 0 && index < count && index / perPage == page;
+    };
+
+    const auto animateTile = [&](int previous, int current) {
+        if (!onVisiblePage(current))
+            return;
+        GlossyIcon* icon = iconAt(current);
+        if (!icon)
+            return;
+        const int spanColumns = std::max(1, icon->gridSpanColumns());
+        const int spanRows = std::max(1, icon->gridSpanRows());
+        if (onVisiblePage(previous)) {
+            icon->startGlideFrom(
+                gridSpanRect(previous, spanColumns, spanRows), kSwapGlideDuration);
+            return;
+        }
+        // Came from another page: enter from the side that page sits on, the
+        // same direction a page slide would have travelled.
+        nxui::Rect from = gridSpanRect(current, spanColumns, spanRows);
+        const bool fromEarlierPage = previous < 0 || (current / perPage) > (previous / perPage);
+        from.x += (fromEarlierPage ? -1.f : 1.f) * pageStride();
+        icon->setAppearOrigin(from);
+        icon->startAppear(0.f);
+    };
+
+    animateTile(heldPrevious, heldCurrent);
+    animateTile(displacedPrevious, displacedCurrent);
+}
+
 void IconGrid::startDisappearAnimation(const IconAppearOptions& opt, float dur) {
     if (m_layoutMode == AppLayoutMode::DynamicLine) {
         for (auto& icon : m_allIcons)
@@ -608,6 +657,12 @@ void IconGrid::startPageTransition(int targetPage) {
     const int start = m_page * iconsPerPage();
     const int end   = std::min(start + iconsPerPage(), (int)m_allIcons.size());
     for (int i = start; i < end; ++i)
+        m_allIcons[i]->forceVisible();
+    // The outgoing page slides out at full opacity too: a first page change
+    // while the startup cascade is still running used to show through it.
+    const int prevStart = m_slidePrevPage * iconsPerPage();
+    const int prevEnd = std::min(prevStart + iconsPerPage(), (int)m_allIcons.size());
+    for (int i = prevStart; i < prevEnd; ++i)
         m_allIcons[i]->forceVisible();
 
     const float stride = pageStride();

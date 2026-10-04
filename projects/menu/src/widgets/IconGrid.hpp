@@ -59,12 +59,20 @@ public:
                             std::vector<nxui::Widget*> right);
 
     int focusedGlobalIndex() const;
-    bool focusGlobalIndex(int idx);
+    bool focusGlobalIndex(int idx, bool instant = false);
     bool swapSlots(int a, int b);
 
     void startAppearAnimation(const IconAppearOptions& opt = IconAppearOptions{});
     // Mirror of a fromTile appear: icons fly back into opt.origin, last in, first out.
     void startDisappearAnimation(const IconAppearOptions& opt, float dur);
+
+    // Move-mode swap effect. Each pair is (previous, current) global index of a
+    // tile that traded places with the other. Tiles that stay on the visible
+    // page glide across the gap their partner left behind; a tile arriving from
+    // another page slides in from the side that page lies on. Call after the
+    // model rebuild, since the rebuild force-visibles every icon.
+    void animateSwap(int heldPrevious, int heldCurrent,
+                     int displacedPrevious, int displacedCurrent);
 
     void startPageTransition(int targetPage);
     bool isTransitioning() const { return m_sliding; }
@@ -140,7 +148,10 @@ private:
     float m_originX = 0, m_originY = 0;
     static constexpr float kLineScrollDuration = 0.34f;
 
-    bool  m_slideTransition = false;
+    // Slide is what the grid starts with: a build path that forgets to apply
+    // the user's Page Transition setting should fall back to the usual slide,
+    // never to the teleport cascade.
+    bool  m_slideTransition = true;
     bool  m_edgePaging      = false;
     bool  m_sliding         = false;
     int   m_slidePrevPage   = 0;
@@ -149,6 +160,7 @@ private:
     float m_slideInDx       = 0.f;
     float m_slideOutDx      = 0.f;
     static constexpr float kSlideDuration = 0.34f;
+    static constexpr float kSwapGlideDuration = 0.36f;
 
     nxui::AnimatedFloat m_edgeBump;
     bool  m_bumping = false;

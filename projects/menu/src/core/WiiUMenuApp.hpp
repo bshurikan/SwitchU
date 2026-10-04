@@ -21,7 +21,8 @@
 #include "widgets/ProgressDialog.hpp"
 #include "widgets/AppletButton.hpp"
 #include "widgets/PageIndicator.hpp"
-#include "widgets/UserAvatarButton.hpp"
+#include "widgets/ProfileCarouselScreen.hpp"
+#include "widgets/ProfileLockButton.hpp"
 #include "widgets/FolderBackdrop.hpp"
 #include "widgets/SteamGridDbBackdrop.hpp"
 #include "widgets/FolderZoom.hpp"
@@ -111,15 +112,20 @@ private:
     std::pair<int, int> folderGridDimensions(std::uint32_t folderId) const;
     void reflowHomeGrid();
     void buildGrid();
-    void buildUserAvatarBar(bool loadImmediately = true);
-    void loadNextUserAvatar();
-    void appendAddUserButton();
-    void wireUserAvatarNavigation();
+    void loadProfiles(bool loadImmediately = true);
+    void loadNextProfile();
+    void finishProfileLoading();
+    void refreshProfileLockButton();
+    void wireProfileLockNavigation();
+    void createProfileCarousel();
+    void openProfileCarousel();
+    void setLockedProfile(std::optional<AccountUid> uid);
     void composeRootPending(std::vector<PendingApp>& apps);
     GridModel buildRootFolderModel();
     GridModel buildOpenFolderModel(std::uint32_t folderId) const;
     void applyDisplayModel(GridModel model, std::uint64_t focusId, bool animate,
-                           const IconAppearOptions& appear = {});
+                           const IconAppearOptions& appear = {},
+                           bool instantFocus = false);
     nxui::Rect folderTileRect(std::uint32_t folderId) const;
     void snapCursorToFocus();
     void syncEditJiggle();
@@ -132,7 +138,10 @@ private:
     void closeFolder(bool preserveEditMode = false, bool animated = false);
     void finishCloseFolder(std::uint32_t oldId, bool preserveEditMode);
     nxui::Rect folderPanelRect() const;
+    // Re-anchor open-folder glass + title after leave-splash / layout settles.
+    void refreshOpenFolderChrome();
     void placeFolderHeader(const nxui::Rect& panel);
+    void syncSteamGridDbLogoArea();
     void syncFolderHeader();
     void createFolder(int targetSlot = -1);
     void showAddContextMenu(int targetSlot, const nxui::Rect& anchor);
@@ -183,6 +192,9 @@ private:
     void pollDeferredLeaveCapture();
     /// Visual-only suspended outline for leave-frame capture (no focus move).
     void setSuspendedIconVisuals(std::uint64_t titleId);
+    /// Align green pulse + blue cursor + leave-session focus to the launching
+    /// title before the splash frame is captured (does not open folders).
+    void previewLeaveCaptureTitle(std::uint64_t titleId);
     LeaveFrameSession captureLeaveSession() const;
     bool saveLeaveFrame(nxui::Renderer& ren);
     void restoreLeaveSession();
@@ -198,13 +210,21 @@ private:
                           std::function<void(const std::string&)> onAccept);
     void editSteamGridDbApiKey();
     void startSteamGridDbScrape();
+    void cancelSteamGridDbScrape();
     void openSteamGridDbPicker(GameOptionsScreen::ArtworkKind kind,
                                const std::string& query = std::string());
+    void openSteamGridDbPickerForTitle(std::uint64_t titleId,
+                                       const std::string& title,
+                                       GameOptionsScreen::ArtworkKind kind,
+                                       const std::string& query = std::string());
+    void clearSteamGridDbArtwork(std::uint64_t titleId,
+                                 GameOptionsScreen::ArtworkKind kind);
     void editSteamGridDbPickerQuery();
     void applySteamGridDbCandidate(const SteamGridDbManager::BrowseResult& browse,
                                    const SteamGridDbManager::Candidate& candidate);
     void syncSteamGridDb();
     void showFocusedSteamGridDbArtwork(bool forceReload = false);
+    bool steamGridDbArtworkAllowedHere() const;
     void applyTheme();
     void applyThemeResources(const ThemePreset& preset);
     void retryPendingBackgroundImage();
@@ -247,19 +267,25 @@ private:
     };
     PageArrowAnim m_arrowAnimLeft, m_arrowAnimRight;
     bool m_touchArrowLeft = false, m_touchArrowRight = false;
+    bool m_touchBattery = false;
 
     nxui::Rect pageArrowRect(bool left);
     void kickPageArrow(int dir);
     bool flipPage(int dir);
     bool addPageAvailable();
-    void createFolderPage();
+    bool currentPageEmpty() const;
+    bool deletePageAvailable() const;
+    void createPage();
+    void showDeletePageDialog();
+    void deleteCurrentPage();
+    void deleteAllUnusedPages();
     float m_addPageHold = 0.f;
     bool  m_addPageMode = false;
     bool  m_addPageTouchHold = false;
     int findTitleIndex(uint64_t titleId) const;
-    bool focusTitle(uint64_t titleId);
+    bool focusTitle(uint64_t titleId, bool instantFocus = false);
     void markSuspendedIcon(uint64_t titleId);
-    void closeActiveOverlays();
+    void closeActiveOverlays(bool closeFolders = true);
     void handleTouch();
     std::shared_ptr<GlossyIcon> makeIcon(const AppEntry& entry);
     nxui::Texture* folderCoverTexture(std::uint64_t titleId);
@@ -273,6 +299,15 @@ private:
     void createSettings();
     void createQuickSettings();
     void openQuickSettings();
+    void persistMusicPlaybackState(bool updateEnabledFlag = false);
+    void resumeMenuMusicAfterReturn();
+    // Console sleep: the daemon announces the sleep before the system goes
+    // under, because an applet left running keeps presenting frames, playing
+    // music and doing its frame work for the whole sleep.
+    void enterSystemSleep();
+    void leaveSystemSleep();
+    void pollSleepNotifications();
+    void onUpdateAwake(float dt);
     void closeQuickSettings();
     void createThemeShop();
     void createGameOptions();
@@ -383,6 +418,7 @@ private:
     std::shared_ptr<FolderOptionsScreen> m_folderOptions;
     std::shared_ptr<AutoThemeScreen>   m_autoThemeScreen;
     std::shared_ptr<ControllerTestScreen> m_controllerTest;
+    std::shared_ptr<ProfileCarouselScreen> m_profileCarousel;
     std::shared_ptr<TextEntryScreen>      m_textEntry;
 
     nxui::Texture m_gameCardTex;
@@ -400,16 +436,17 @@ private:
     std::shared_ptr<nxui::Box> m_topHud;
     std::shared_ptr<nxui::Box> m_leftSidebar;
     std::shared_ptr<nxui::Box> m_rightSidebar;
-    std::shared_ptr<nxui::Box> m_userAvatarBar;
+    std::shared_ptr<ProfileLockButton> m_profileLock;
     std::shared_ptr<FolderBackdrop> m_folderBackdrop;
     std::shared_ptr<SteamGridDbBackdrop> m_steamGridDbBackdrop;
     std::shared_ptr<FolderZoom>     m_folderZoom;
     nxui::Rect                      m_folderZoomOriginRect{};
     std::shared_ptr<nxui::GlassPanel> m_folderHeader;
     std::shared_ptr<nxui::Label> m_folderHeaderLabel;
+    std::vector<HomeProfile> m_profiles;
+    bool m_profilesComplete = false;
     nxui::AnimatedFloat m_folderHeaderAnim{0.f};
     nxui::Rect m_folderHeaderRest{410.f, 78.f, 460.f, 58.f};
-    std::vector<std::shared_ptr<UserAvatarButton>> m_userAvatarButtons;
 
     AudioManager m_audio;
     AccessibilityManager m_accessibility;
@@ -417,6 +454,9 @@ private:
     std::future<void>    m_configSaveFuture;
     std::future<void>    m_themeDeleteFuture;
     bool                 m_audioStarted = false;
+    bool  m_audioPlaybackRestorePending = false;
+    bool  m_audioSeekAfterHoldoff = false;
+    int   m_audioPlaybackRestoreDelayFrames = 0;
     bool                 m_musicFadeActive = false;
     std::vector<std::string> m_availablePresets;
     bool                 m_presetChangePending = false;
@@ -452,6 +492,9 @@ private:
     std::unique_ptr<DebugImGuiOverlay> m_debugOverlay;
 #endif
     bool m_showWireframe     = false;
+    // Console sleep: set by the daemon's sleep notification, cleared on wake.
+    bool m_systemAsleep      = false;
+    bool m_musicWasPlayingBeforeSleep = false;
     bool m_editMode          = false;
     int  m_editSourceIndex   = -1;
     int  m_editTargetIndex   = -1;
@@ -468,6 +511,16 @@ private:
     nxui::AnimatedRect m_editGhostRect;
     bool m_editGhostRectInit = false;
     float m_editGhostPulse = 0.f;
+    // Touch drag: the ghost follows the finger instead of snapping to slots.
+    bool m_editGhostTouchFollow = false;
+    nxui::Vec2 m_editGhostTouchPos {0.f, 0.f};
+    // Dragging past the grid edge flips pages; holding keeps flipping.
+    float m_editDragEdgeHold = 0.f;
+    int   m_editDragEdgeDir = 0;
+    // Dragging a game over a folder tile opens it after a short hover.
+    float m_editDragFolderHold = 0.f;
+    // Countdown while the hover-opened folder swaps in.
+    float m_editDragFolderOpenWait = 0.f;
     std::vector<uint64_t> m_layoutSlots;
     std::unordered_map<std::uint64_t, switchu::widgets::WidgetSize> m_gameSizes;
     bool m_layoutDirty = false;
@@ -524,7 +577,10 @@ private:
     std::vector<AppEntry> m_allApps;
     std::uint32_t m_openFolderId = 0;
     std::uint32_t m_requestedFolderId = 0;
-    std::uint64_t m_folderOpenFocusTitleId = 0;  
+    std::uint64_t m_folderOpenFocusTitleId = 0;
+    /// Leave-splash folder restore deferred until HUD/layers exist (frosted capture).
+    std::uint32_t m_leaveRestoreFolderId = 0;
+    std::uint64_t m_leaveRestoreFolderFocus = 0;
     bool m_folderCaptureRequested = false;
     bool m_folderCaptureReady = false;
     bool m_folderClosing = false;
@@ -534,13 +590,14 @@ private:
     int  m_touchHitIndex     = -1;
     bool m_touchOnFocused    = false;
     bool m_touchEditDragActive = false;
-    UserAvatarButton* m_touchAvatarTarget = nullptr;
-    bool m_touchAvatarWasFocused = false;
+    bool m_touchProfileLock = false;
+    bool m_touchProfileLockWasFocused = false;
     int  m_deferredRefreshFrames = 0;
     bool m_refreshQueued         = false;
     int  m_refreshCooldownFrames = 0;
     bool m_asyncRefreshPending   = false;
     int  m_refreshPrevPage       = 0;
+    std::uint64_t m_refreshPrevFocusTitleId = 0;
 
     AppConfig m_config;
     SteamGridDbManager m_steamGridDb;
@@ -589,6 +646,7 @@ private:
     bool m_leaveCaptureDeferred = false;
     std::function<void()> m_leaveCaptureDeferredAfter;
     std::uint64_t m_leaveCaptureDeferredSuspendedTitleId = 0;
+    std::uint64_t m_leaveCaptureFocusTitleId = 0;
     LeaveFrameSession m_leaveSession;
     nxui::Texture m_leaveSplashTex;
     enum class LeaveSplashPhase { None, Hold, Fade };

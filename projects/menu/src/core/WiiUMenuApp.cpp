@@ -51,13 +51,18 @@ std::optional<std::uint64_t> queryApplicationPlaytimeSeconds(std::uint64_t title
 #endif
 
 static constexpr const char* kLayoutPath = "sdmc:/config/SwitchU/layout.json";
-static constexpr int kMinHomePages = 8;
+static constexpr int kMinHomePages = 1;
+static constexpr int kMaxHomePages = switchu::folders::kMaxFolderPages;
 static constexpr const char* kBuiltInSoundPreset = "wiiu";
 
 static constexpr float kGridRectX = 0.f;
 static constexpr float kGridRectY = 90.f;
 static constexpr float kGridRectW = 1280.f;
 static constexpr float kGridRectH = 540.f;
+// The profile tile keeps the clock / battery height but stays square, so the
+// HUD row reads as one set of chips while the avatar is not stretched.
+static constexpr float kProfileLockWidth = 62.f;
+static constexpr float kProfileLockHeight = 62.f;
 
 static const nxui::Rect kFolderGridRect{kGridRectX, 148.f, kGridRectW, 470.f};
 static constexpr float kFolderPanelPadX = 22.f;
@@ -108,6 +113,54 @@ bool directoryExists(const std::string& path) {
     std::error_code ec;
     return std::filesystem::is_directory(path, ec);
 }
+
+
+bool isMp3Filename(const std::string& name) {
+    if (name.size() < 4)
+        return false;
+    const auto ext = name.substr(name.size() - 4);
+    return ext == ".mp3" || ext == ".MP3";
+}
+
+std::vector<uint8_t> readBinaryFileLimited(const std::string& path, size_t maxBytes = 2 * 1024 * 1024) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f)
+        return {};
+    f.seekg(0, std::ios::end);
+    const auto sz = static_cast<size_t>(f.tellg());
+    if (sz == 0 || sz > maxBytes)
+        return {};
+    f.seekg(0, std::ios::beg);
+    std::vector<uint8_t> bytes(sz);
+    f.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(sz));
+    if (!f)
+        return {};
+    return bytes;
+}
+
+std::vector<uint8_t> loadAlbumFolderCover(const std::string& albumDir) {
+    static const char* kNames[] = {
+        "cover.jpg", "cover.png", "folder.jpg", "folder.png",
+        "AlbumArt.jpg", "AlbumArt.png", "albumart.jpg", "albumart.png"
+    };
+    for (const char* name : kNames) {
+        auto bytes = readBinaryFileLimited(albumDir + "/" + name);
+        if (!bytes.empty())
+            return bytes;
+    }
+    return {};
+}
+
+void sortMusicTrackNames(std::vector<std::string>& names) {
+    std::sort(names.begin(), names.end(), [](const std::string& left, const std::string& right) {
+        const bool leftIsHome = (left == "home.mp3" || left == "home.MP3");
+        const bool rightIsHome = (right == "home.mp3" || right == "home.MP3");
+        if (leftIsHome != rightIsHome)
+            return leftIsHome;
+        return left < right;
+    });
+}
+
 
 std::string resolveAudioOverridePath(const std::string& preferredBase,
                                     const std::string& fallbackBase,
@@ -225,6 +278,14 @@ bool hexToAccountUid(const std::string& s, AccountUid& out) {
         return false;
     out = uid;
     return true;
+}
+
+std::string accountUidToHex(const AccountUid& uid) {
+    char buf[33] = {};
+    std::snprintf(buf, sizeof(buf), "%016llX%016llX",
+                  (unsigned long long)uid.uid[0],
+                  (unsigned long long)uid.uid[1]);
+    return std::string(buf);
 }
 
 const char* safeTag(const nxui::Widget* widget) {
@@ -346,7 +407,7 @@ bool WiiUMenuApp::presentInitialFrame(nxui::Renderer& ren) {
         return true;
     }
 
-    // No cached frame — still avoid pure black while onCreate runs.
+    // No cached frame ΓÇö still avoid pure black while onCreate runs.
     ren.drawRect({0.f, 0.f, 1280.f, 720.f}, nxui::Color(0.07f, 0.12f, 0.18f, 1.f));
     m_leaveSplashDrawn = true;
     m_leaveSplashPhase = LeaveSplashPhase::None;
@@ -361,10 +422,14 @@ bool WiiUMenuApp::presentInitialFrame(nxui::Renderer& ren) {
 
 void WiiUMenuApp::scheduleLeaveCapture(std::function<void()> afterCapture,
                                        std::uint64_t previewSuspendedTitleId) {
-    // Preview the launching title as suspended before this frame renders so the
-    // captured splash matches HOME after return (pulse on the new open title).
+    // Title launch/resume: lock green pulse, blue cursor, and session focus to
+    // the launching title before this frame renders. Without that, a fast
+    // Spharia↔MPO hop can capture the previous tile's focus while the green
+    // outline already moved.
     if (previewSuspendedTitleId != 0)
-        setSuspendedIconVisuals(previewSuspendedTitleId);
+        previewLeaveCaptureTitle(previewSuspendedTitleId);
+    else
+        m_leaveCaptureFocusTitleId = 0;
 
     // User/profile/settings overlays animate out. Capturing the next frame
     // immediately would persist the fading overlay instead of the HOME scene.
@@ -418,6 +483,7 @@ bool WiiUMenuApp::hasActiveLeaveCaptureOverlay() const {
         || (m_gameOptions && m_gameOptions->isActive())
         || (m_folderOptions && m_folderOptions->isActive())
         || (m_controllerTest && m_controllerTest->isActive())
+        || (m_profileCarousel && m_profileCarousel->isActive())
         || (m_steamGridDbPicker && m_steamGridDbPicker->isActive());
 }
 
@@ -440,12 +506,43 @@ void WiiUMenuApp::setSuspendedIconVisuals(std::uint64_t titleId) {
         icon->setSuspended(titleId != 0 && icon->titleId() == titleId);
 }
 
+void WiiUMenuApp::previewLeaveCaptureTitle(std::uint64_t titleId) {
+    m_leaveCaptureFocusTitleId = titleId;
+    setSuspendedIconVisuals(titleId);
+    if (titleId == 0 || !m_grid)
+        return;
+
+    // Only retarget focus when the launching title is already on the current
+    // grid (root page or open folder). Never open a folder here — that would
+    // fight the splash composition.
+    const int idx = findTitleIndex(titleId);
+    if (idx < 0 || !m_grid->focusGlobalIndex(idx))
+        return;
+
+    if (auto* cur = m_grid->focusManager().current()) {
+        focusManager().setFocus(cur);
+        if (m_cursor) {
+            // Snap immediately so the captured splash does not bake in a
+            // mid-tween blue ring still sitting on the previous title.
+            m_cursor->moveTo(cur->focusRect().expanded(4.f), 0.f);
+            m_cursor->setVisible(true);
+        }
+    }
+}
+
 LeaveFrameSession WiiUMenuApp::captureLeaveSession() const {
     LeaveFrameSession session;
     session.valid = true;
     session.openFolderId = m_openFolderId;
     session.page = m_grid ? m_grid->currentPage() : 0;
     session.focusTitleId = 0;
+
+    // Prefer the launching title stamped by scheduleLeaveCapture — focusManager
+    // can still briefly report the previous icon after a fast hop.
+    if (m_leaveCaptureFocusTitleId != 0) {
+        session.focusTitleId = m_leaveCaptureFocusTitleId;
+        return session;
+    }
 
     if (auto* cur = focusManager().current()) {
         if (cur->tag() == "glossy_icon")
@@ -466,10 +563,12 @@ bool WiiUMenuApp::saveLeaveFrame(nxui::Renderer& ren) {
     int height = 0;
     if (!ren.downloadFramebufferRgba(rgba, width, height, false)) {
         DebugLog::log("[leave] framebuffer download failed");
+        m_leaveCaptureFocusTitleId = 0;
         return false;
     }
 
     const LeaveFrameSession session = captureLeaveSession();
+    m_leaveCaptureFocusTitleId = 0;
     if (!LeaveFrameCache::save(session, rgba.data(), width, height)) {
         DebugLog::log("[leave] cache write failed");
         return false;
@@ -502,10 +601,17 @@ void WiiUMenuApp::restoreLeaveSession() {
     m_leaveSession.valid = false;
 
     if (session.openFolderId != 0 && m_folderStore.find(session.openFolderId)) {
-        m_requestedFolderId = session.openFolderId;
-        m_folderOpenFocusTitleId = session.focusTitleId;
-        openCapturedFolder();
-        DebugLog::log("[leave] restored folder=%u focus=%016lX",
+        // Do NOT openCapturedFolder here — HUD/header/sidebars/offscreen blur
+        // are not built yet. Defer through requestOpenFolder after layers exist
+        // so the frosted root capture runs under the leave splash.
+        m_leaveRestoreFolderId = session.openFolderId;
+        m_leaveRestoreFolderFocus = session.focusTitleId;
+        const int folderIdx = findTitleIndex(folderTitleId(session.openFolderId));
+        if (folderIdx >= 0 && m_grid->focusGlobalIndex(folderIdx)) {
+            if (auto* focused = m_grid->focusManager().current())
+                focusManager().setFocus(focused);
+        }
+        DebugLog::log("[leave] deferred folder restore id=%u focus=%016lX",
                       session.openFolderId,
                       static_cast<unsigned long>(session.focusTitleId));
         return;
@@ -576,6 +682,10 @@ void WiiUMenuApp::updateLeaveSplashHandoff(float dt) {
             m_leaveSplashFade = 0.f;
             m_leaveSplashPhase = LeaveSplashPhase::None;
             setLeaveMotionFrozen(false);
+            // Leave-restore can open the folder before the grid has its final
+            // content rect; re-anchor glass + title once HOME is interactive.
+            refreshOpenFolderChrome();
+            showFocusedSteamGridDbArtwork();
             DebugLog::log("[leave] splash handoff complete");
         }
     }
@@ -673,7 +783,7 @@ bool WiiUMenuApp::onCreate() {
         };
         char details[240]{};
         std::snprintf(details, sizeof(details),
-                      "%s failed.\nCommand: %u · Request: %lu\nResult: 0x%X · Module: %u · Description: %u",
+                      "%s failed.\nCommand: %u ┬╖ Request: %lu\nResult: 0x%X ┬╖ Module: %u ┬╖ Description: %u",
                       commandName(m_startupFailure.command),
                       m_startupFailure.command,
                       static_cast<unsigned long>(m_startupFailure.request_id),
@@ -836,22 +946,9 @@ void WiiUMenuApp::loadStaticTextures() {
                                          std::string(SD_ASSETS) + "/icons/widget_battery_joycon_right.png");
 }
 
-void WiiUMenuApp::buildUserAvatarBar(bool loadImmediately) {
-    m_userAvatarButtons.clear();
-
-    if (!m_userAvatarBar) {
-        m_userAvatarBar = std::make_shared<nxui::Box>(nxui::Axis::ROW);
-        m_userAvatarBar->setMarginTop(17.f);
-        m_userAvatarBar->setGap(10.f);
-        m_userAvatarBar->setShrink(0.f);
-        m_userAvatarBar->setSize(0.f, 56.f);
-        m_userAvatarBar->setTag("userAvatarBar");
-        m_userAvatarBar->setWireframeEnabled(false);
-    } else {
-        m_userAvatarBar->clearChildren();
-        m_userAvatarBar->setSize(0.f, 56.f);
-    }
-
+void WiiUMenuApp::loadProfiles(bool loadImmediately) {
+    m_profiles.clear();
+    m_profilesComplete = false;
     m_pendingProfileUids.clear();
     m_pendingProfileIndex = 0;
     if (!loadImmediately && m_fastReturnRequested) {
@@ -877,151 +974,138 @@ void WiiUMenuApp::buildUserAvatarBar(bool loadImmediately) {
 
     if (loadImmediately) {
         while (m_pendingProfileIndex < m_pendingProfileUids.size())
-            loadNextUserAvatar();
-        appendAddUserButton();
+            loadNextProfile();
+        finishProfileLoading();
     } else if (!m_pendingProfileUids.empty()) {
         m_deferredProfileFrames = 1;
         DebugLog::log("[profiles] %d avatars deferred until after first frame", count);
     } else {
-        appendAddUserButton();
+        finishProfileLoading();
     }
 }
 
-void WiiUMenuApp::appendAddUserButton() {
-    if (!m_userAvatarBar || m_pendingProfileUids.size() >= 8)
-        return;
-    if (!m_userAvatarButtons.empty() && m_userAvatarButtons.back()->addUserMode())
-        return;
-
-    auto add = std::make_shared<UserAvatarButton>();
-    add->setSize(56.f, 56.f);
-    add->setMinWidth(56.f);
-    add->setMinHeight(56.f);
-    add->setShrink(0.f);
-    add->setCornerRadius(28.f);
-    add->setChromeEnabled(true);
-    add->setTheme(&m_theme);
-    add->setAddUserMode(true);
-    add->setFocusable(true);
-    add->setOnActivate([this]() {
-        m_audio.playSfx(Sfx::Activate);
-#ifdef SWITCHU_MENU
-        scheduleLeaveCapture([this]() { m_launcher.launchUserCreator(); });
-#endif
-    });
-    m_userAvatarButtons.push_back(add);
-    m_userAvatarBar->addChild(add);
-
-    const float countF = static_cast<float>(m_userAvatarButtons.size());
-    m_userAvatarBar->setSize(countF * 56.f + (countF - 1.f) * 10.f, 56.f);
-    wireUserAvatarNavigation();
-    if (m_topHud)
-        m_topHud->layout();
-    DebugLog::log("[profiles] add-user tile appended count=%d",
-                  static_cast<int>(m_pendingProfileUids.size()));
+void WiiUMenuApp::finishProfileLoading() {
+    m_profilesComplete = true;
+    refreshProfileLockButton();
+    DebugLog::log("[profiles] loaded count=%d", static_cast<int>(m_profiles.size()));
 }
 
-void WiiUMenuApp::wireUserAvatarNavigation() {
+void WiiUMenuApp::refreshProfileLockButton() {
+    std::optional<AccountUid> locked;
+    AccountUid lockedUid{};
+    if (m_config.defaultProfileEnabled &&
+        hexToAccountUid(m_config.defaultProfileUid, lockedUid))
+        locked = lockedUid;
+
+    if (m_profileLock) {
+        const HomeProfile* match = nullptr;
+        if (locked) {
+            for (const auto& profile : m_profiles) {
+                if (profile.uid.uid[0] == locked->uid[0] &&
+                    profile.uid.uid[1] == locked->uid[1]) {
+                    match = &profile;
+                    break;
+                }
+            }
+        }
+        // A locked profile that was deleted from System Settings falls back
+        // to the "ask" state without rewriting the user's config.
+        if (match)
+            m_profileLock->setLockedProfile(match->avatar, match->nickname);
+        else
+            m_profileLock->clearLockedProfile();
+    }
+
+    if (m_profileCarousel) {
+        m_profileCarousel->setProfiles(m_profiles,
+                                       m_profilesComplete && m_profiles.size() < 8);
+        m_profileCarousel->setLockedUid(locked);
+    }
+}
+
+void WiiUMenuApp::setLockedProfile(std::optional<AccountUid> uid) {
+    m_config.defaultProfileEnabled = uid.has_value();
+    m_config.defaultProfileUid = uid ? accountUidToHex(*uid) : std::string();
+    m_config.save();
+    refreshProfileLockButton();
+    DebugLog::log("[profiles] launch profile %s", uid ? "locked" : "cleared");
+}
+
+void WiiUMenuApp::wireProfileLockNavigation() {
+    if (!m_profileLock)
+        return;
+    auto* lock = m_profileLock.get();
     const bool dynamicLine = m_appLayoutMode == AppLayoutMode::DynamicLine;
-    auto returnToRow = [this]() {
-        if (!m_grid || m_appLayoutMode != AppLayoutMode::DynamicLine
-            || m_navigator.route() != switchu::navigation::Route::Home)
-            return;
-        if (auto* target = m_grid->focusManager().current())
-            focusManager().setFocus(target);
-    };
-    for (std::size_t i = 0; i < m_userAvatarButtons.size(); ++i) {
-        auto* current = m_userAvatarButtons[i].get();
-        nxui::Widget* left = current;
-        if (i > 0)
-            left = m_userAvatarButtons[i - 1].get();
-        else if (dynamicLine && !m_sidebar.leftButtons().empty())
-            left = m_sidebar.leftButtons().back().get();
-        nxui::Widget* right = current;
-        if (i + 1 < m_userAvatarButtons.size())
-            right = m_userAvatarButtons[i + 1].get();
-        else if (dynamicLine && !m_sidebar.rightButtons().empty())
-            right = m_sidebar.rightButtons().front().get();
-        current->setCustomNavigation(nxui::FocusDirection::LEFT, left);
-        current->setCustomNavigation(nxui::FocusDirection::RIGHT, right);
-        current->setCustomNavigation(nxui::FocusDirection::DOWN, nullptr);
-        current->removeAction(static_cast<uint64_t>(nxui::Button::DDown));
-        current->removeAction(static_cast<uint64_t>(nxui::Button::LStickD));
-        current->removeAction(static_cast<uint64_t>(nxui::Button::RStickD));
-        if (dynamicLine)
-            current->addDirectionAction(nxui::FocusDirection::DOWN, returnToRow);
-    }
-    if (dynamicLine && !m_userAvatarButtons.empty()) {
+    const auto& leftButtons = m_sidebar.leftButtons();
+
+    lock->setCustomNavigation(nxui::FocusDirection::LEFT, lock);
+    lock->setCustomNavigation(nxui::FocusDirection::UP, lock);
+    lock->setCustomNavigation(nxui::FocusDirection::DOWN, nullptr);
+    lock->removeAction(static_cast<uint64_t>(nxui::Button::DDown));
+    lock->removeAction(static_cast<uint64_t>(nxui::Button::LStickD));
+    lock->removeAction(static_cast<uint64_t>(nxui::Button::RStickD));
+
+    if (dynamicLine) {
+        // The tile heads the top strip: [profile] [left applets] [right applets].
+        nxui::Widget* first = leftButtons.empty() ? nullptr : leftButtons.front().get();
+        lock->setCustomNavigation(nxui::FocusDirection::RIGHT, first ? first : lock);
+        m_sidebar.setDynamicLineProfileTarget(lock);
+        lock->addDirectionAction(nxui::FocusDirection::DOWN, [this]() {
+            if (!m_grid || m_appLayoutMode != AppLayoutMode::DynamicLine
+                || m_navigator.route() != switchu::navigation::Route::Home)
+                return;
+            if (auto* target = m_grid->focusManager().current())
+                focusManager().setFocus(target);
+        });
         if (m_grid)
-            m_grid->setDynamicLineUpTarget(
-                m_userAvatarButtons[m_userAvatarButtons.size() / 2].get());
-        m_sidebar.setDynamicLineUpTarget(
-            m_userAvatarButtons[m_userAvatarButtons.size() / 2].get());
-        m_sidebar.setDynamicLineProfileTargets(m_userAvatarButtons.front().get(),
-                                               m_userAvatarButtons.back().get());
+            m_grid->setDynamicLineUpTarget(lock);
+        m_sidebar.setDynamicLineUpTarget(nullptr);
     } else {
-        m_sidebar.setDynamicLineProfileTargets(nullptr, nullptr);
+        lock->setCustomNavigation(nxui::FocusDirection::RIGHT, nullptr);
+        m_sidebar.setDynamicLineProfileTarget(nullptr);
+        // Grid mode: the tile sits right above the left applet column.
+        if (!leftButtons.empty()) {
+            lock->setCustomNavigation(nxui::FocusDirection::DOWN, leftButtons.front().get());
+            leftButtons.front()->setCustomNavigation(nxui::FocusDirection::UP, lock);
+        }
     }
 }
 
-void WiiUMenuApp::loadNextUserAvatar() {
-    if (!m_userAvatarBar || m_pendingProfileIndex >= m_pendingProfileUids.size())
+void WiiUMenuApp::loadNextProfile() {
+    if (m_pendingProfileIndex >= m_pendingProfileUids.size())
         return;
 
     const AccountUid uid = m_pendingProfileUids[m_pendingProfileIndex++];
     AccountProfile profile{};
-    Result rc = accountGetProfile(&profile, uid);
-    if (R_FAILED(rc))
-        return;
+    if (R_SUCCEEDED(accountGetProfile(&profile, uid))) {
+        HomeProfile entry;
+        entry.uid = uid;
 
-    auto avatar = std::make_shared<UserAvatarButton>();
-    avatar->setSize(56.f, 56.f);
-    avatar->setMinWidth(56.f);
-    avatar->setMinHeight(56.f);
-    avatar->setShrink(0.f);
-    avatar->setCornerRadius(28.f);
-    avatar->setChromeEnabled(true);
-    avatar->setTheme(&m_theme);
-    avatar->setUid(uid);
-    avatar->setFocusable(true);
+        AccountProfileBase base{};
+        AccountUserData userData{};
+        if (R_SUCCEEDED(accountProfileGet(&profile, &userData, &base)))
+            entry.nickname = base.nickname;
 
-    AccountProfileBase base{};
-    AccountUserData userData{};
-    if (R_SUCCEEDED(accountProfileGet(&profile, &userData, &base)))
-        avatar->setNickname(base.nickname);
-
-    u32 imgSize = 0;
-    if (R_SUCCEEDED(accountProfileGetImageSize(&profile, &imgSize)) && imgSize > 0) {
-        std::vector<uint8_t> imgBuf(imgSize);
-        u32 realSize = 0;
-        if (R_SUCCEEDED(accountProfileLoadImage(&profile, imgBuf.data(), imgSize, &realSize))
-                && realSize > 0) {
-            avatar->loadAvatar(app().gpu(), app().renderer(), imgBuf.data(), realSize);
+        u32 imgSize = 0;
+        if (R_SUCCEEDED(accountProfileGetImageSize(&profile, &imgSize)) && imgSize > 0) {
+            std::vector<uint8_t> imgBuf(imgSize);
+            u32 realSize = 0;
+            if (R_SUCCEEDED(accountProfileLoadImage(&profile, imgBuf.data(), imgSize, &realSize))
+                    && realSize > 0) {
+                auto avatar = std::make_shared<nxui::Texture>();
+                if (avatar->loadFromMemory(app().gpu(), app().renderer(),
+                                           imgBuf.data(), realSize, 256))
+                    entry.avatar = std::move(avatar);
+            }
         }
+
+        accountProfileClose(&profile);
+        m_profiles.push_back(std::move(entry));
+        refreshProfileLockButton();
     }
-
-    avatar->setOnActivate([this, uid]() {
-        m_audio.playSfx(Sfx::Activate);
-#ifdef SWITCHU_MENU
-        scheduleLeaveCapture([this, uid]() { m_launcher.launchUserPage(uid); });
-#endif
-    });
-
-    accountProfileClose(&profile);
-    m_userAvatarButtons.push_back(avatar);
-    m_userAvatarBar->addChild(avatar);
-
-    if (!m_userAvatarButtons.empty()) {
-        const float countF = static_cast<float>(m_userAvatarButtons.size());
-        m_userAvatarBar->setSize(countF * 56.f + (countF - 1.f) * 10.f, 56.f);
-        wireUserAvatarNavigation();
-    }
-
-    if (m_topHud)
-        m_topHud->layout();
 
     if (m_pendingProfileIndex >= m_pendingProfileUids.size())
-        appendAddUserButton();
+        finishProfileLoading();
 }
 
 WiiUMenuApp::GridLayoutMetrics WiiUMenuApp::computeGridLayoutMetrics() const {
@@ -1188,6 +1272,7 @@ void WiiUMenuApp::reflowHomeGrid() {
     m_iconStreamer.reconcileTitleIds(reflowedTitleIds);
 
     GridLayoutMetrics gridMetrics = computeGridLayoutMetrics();
+    m_grid->setSlideTransition(m_config.pageTransitionMode == 0);
     m_grid->setup(std::move(icons), cols, rows,
                   gridMetrics.cellW, gridMetrics.cellH,
                   gridMetrics.padX, gridMetrics.padY);
@@ -1375,7 +1460,9 @@ void WiiUMenuApp::composeRootPending(std::vector<PendingApp>& apps) {
         item.folderId = folder.id;
         item.folderPreviewCount = static_cast<int>(folder.titleCount());
         item.folderColorIndex = folder.colorIndex;
-        item.folderCoverTitleId = switchu::folders::firstCoverTitleId(folder);
+        item.folderCoverTitleId = SteamGridDbManager::hasIcon(folderTitleId(folder.id))
+            ? folderTitleId(folder.id)
+            : switchu::folders::firstCoverTitleId(folder);
         itemOrder.push_back(item.titleId);
         byId.emplace(item.titleId, std::move(item));
     }
@@ -1546,7 +1633,9 @@ GridModel WiiUMenuApp::buildRootFolderModel() {
         entry.folderId = folder.id;
         entry.folderPreviewCount = static_cast<int>(folder.titleCount());
         entry.folderColorIndex = folder.colorIndex;
-        entry.folderCoverTitleId = switchu::folders::firstCoverTitleId(folder);
+        entry.folderCoverTitleId = SteamGridDbManager::hasIcon(folderTitleId(folder.id))
+            ? folderTitleId(folder.id)
+            : switchu::folders::firstCoverTitleId(folder);
         entries.emplace(entry.titleId, std::move(entry));
     }
     for (const auto& widget : m_widgetStore.all()) {
@@ -1821,7 +1910,7 @@ GridModel WiiUMenuApp::buildOpenFolderModel(std::uint32_t folderId) const {
 }
 
 void WiiUMenuApp::applyDisplayModel(GridModel model, std::uint64_t focusId, bool animate,
-                                    const IconAppearOptions& appear) {
+                                    const IconAppearOptions& appear, bool instantFocus) {
     if (!m_grid)
         return;
     const auto isImageAssetWidget = [](switchu::widgets::WidgetType type) {
@@ -1911,7 +2000,7 @@ void WiiUMenuApp::applyDisplayModel(GridModel model, std::uint64_t focusId, bool
     // the edge columns are free to flip the page instead.
     const bool inFolder = (m_openFolderId != 0);
     m_grid->setEdgePaging(inFolder);
-    m_grid->setSlideTransition(true);
+    m_grid->setSlideTransition(m_config.pageTransitionMode == 0);
     m_grid->setLayoutMode(m_appLayoutMode);
     m_grid->setup(std::move(icons), columns, rows, metrics.cellW, metrics.cellH,
                   metrics.padX, metrics.padY);
@@ -1936,9 +2025,14 @@ void WiiUMenuApp::applyDisplayModel(GridModel model, std::uint64_t focusId, bool
             focusManager().setFocus(target);
         updateCursor();
     });
-    if (!focusTitle(focusId)) {
-        if (auto* first = m_grid->focusManager().current())
+    if (!focusTitle(focusId, instantFocus)) {
+        if (auto* first = m_grid->focusManager().current()) {
+            // A rebuilt model can leave the single-row carousel at the offset
+            // of the previous tree; snapping avoids scrolling the whole row.
+            if (instantFocus && m_appLayoutMode == AppLayoutMode::DynamicLine)
+                m_grid->focusGlobalIndex(m_grid->focusedGlobalIndex(), true);
             focusManager().setFocus(first);
+        }
     }
     m_iconStreamer.onPageChanged(m_grid->currentPage(), m_grid->iconsPerPage(),
                                  app().gpu(), app().renderer(), m_grid->allIcons());
@@ -2873,9 +2967,9 @@ void WiiUMenuApp::showWidgetSizeMenu(int targetSlot, const nxui::Rect& anchor,
     std::vector<ContextMenu::Item> items;
     for (const auto size : switchu::widgets::supportedSizes(type, m_appLayoutMode)) {
         const bool available = canPlaceWidget(targetSlot, size);
-        const std::string label = std::to_string(size.columns) + "×"
+        const std::string label = std::to_string(size.columns) + "├ù"
             + std::to_string(size.rows)
-            + (available ? std::string() : " — " + i18n.tr("widget.no_space", "No space"));
+            + (available ? std::string() : " ΓÇö " + i18n.tr("widget.no_space", "No space"));
         items.push_back({label, [this, targetSlot, anchor, type, size]() {
             if (type == switchu::widgets::WidgetType::ImagePin)
                 showWidgetAssetMenu(targetSlot, anchor, type, size);
@@ -2949,7 +3043,7 @@ void WiiUMenuApp::showWidgetOptionsMenu(std::uint32_t widgetId, int slot,
     for (const auto size : switchu::widgets::supportedSizes(widget->type, m_appLayoutMode)) {
         const bool available = canPlaceWidget(slot, size, widgetId);
         const std::string label = i18n.tr("widget.resize", "Resize") + " "
-            + std::to_string(size.columns) + "×" + std::to_string(size.rows);
+            + std::to_string(size.columns) + "├ù" + std::to_string(size.rows);
         items.push_back({label, [this, widgetId, size]() {
             if (!m_widgetStore.setSize(widgetId, size)) {
                 m_contextMenu->hide();
@@ -3043,12 +3137,23 @@ nxui::Rect WiiUMenuApp::folderTileRect(std::uint32_t folderId) const {
     if (!m_grid)
         return {};
     const std::uint64_t tid = folderTitleId(folderId);
+    const auto& icons = m_grid->allIcons();
+    // Single-row mode keeps every icon as a child regardless of the page index,
+    // so the page window below would miss a folder outside the first page and
+    // the open animation would be skipped. Scan the whole row there.
+    if (m_appLayoutMode == AppLayoutMode::DynamicLine) {
+        for (const auto& icon : icons) {
+            if (icon && icon->titleId() == tid)
+                return icon->focusRect();
+        }
+        return {};
+    }
     const int perPage = m_grid->iconsPerPage();
     const int start   = m_grid->currentPage() * perPage;
     const int end     = std::min(start + perPage,
-                                 static_cast<int>(m_grid->allIcons().size()));
+                                 static_cast<int>(icons.size()));
     for (int i = start; i < end; ++i) {
-        const auto& icon = m_grid->allIcons()[static_cast<std::size_t>(i)];
+        const auto& icon = icons[static_cast<std::size_t>(i)];
         if (icon && icon->titleId() == tid)
             return icon->focusRect();
     }
@@ -3105,19 +3210,17 @@ void WiiUMenuApp::configureDynamicLineNavigation() {
         for (const auto& button : m_sidebar.rightButtons())
             rightTargets.push_back(button.get());
         m_grid->setGridSideTargets(std::move(leftTargets), std::move(rightTargets));
-        nxui::Widget* profileTarget = dynamicLine && !m_userAvatarButtons.empty()
-            ? m_userAvatarButtons[m_userAvatarButtons.size() / 2].get() : nullptr;
-        m_grid->setDynamicLineUpTarget(profileTarget);
+        m_grid->setDynamicLineUpTarget(dynamicLine ? m_profileLock.get() : nullptr);
         m_grid->setDynamicLineDownTarget(nullptr);
     }
 
     if (!dynamicLine) {
         m_sidebar.setDynamicLineDownAction({});
-        wireUserAvatarNavigation();
+        wireProfileLockNavigation();
         return;
     }
 
-    wireUserAvatarNavigation();
+    wireProfileLockNavigation();
 
     // Resolve the app when DOWN is pressed. A persistent raw pointer here can
     // outlive icons rebuilt by a move or catalogue refresh.
@@ -3146,8 +3249,18 @@ void WiiUMenuApp::setAppLayoutMode(AppLayoutMode mode) {
     if (m_grid && !rebuildRoot) {
         m_grid->setLayoutMode(m_appLayoutMode);
     }
-    if (m_steamGridDbBackdrop)
+    if (m_steamGridDbBackdrop) {
         m_steamGridDbBackdrop->setLayoutMode(m_appLayoutMode);
+        showFocusedSteamGridDbArtwork(true);
+    }
+    if (m_grid && m_openFolderId != 0) {
+        // The layout changed while a folder is open: re-anchor the glass plate
+        // and the title so the frame follows the new arrangement instead of
+        // keeping the geometry of the previous mode.
+        const nxui::Rect panel = folderPanelRect();
+        if (m_folderZoom) m_folderZoom->retarget(panel);
+        placeFolderHeader(panel);
+    }
 
     if (rebuildRoot) {
         std::uint64_t focused = 0;
@@ -3208,8 +3321,24 @@ void WiiUMenuApp::openCapturedFolder() {
         appear.origin    = m_folderZoomOriginRect;
     }
     applyDisplayModel(buildOpenFolderModel(m_openFolderId), m_folderOpenFocusTitleId,
-                      zoom, appear);
+                      zoom, appear, true);
     m_folderOpenFocusTitleId = 0;
+    // Single-row mode scrolls by index instead of paging, so a freshly opened
+    // folder must be pinned to its first item explicitly — otherwise the
+    // carousel keeps the offset it had on the root grid.
+    if (!refocus && m_appLayoutMode == AppLayoutMode::DynamicLine && m_grid) {
+        const auto& icons = m_grid->allIcons();
+        for (int i = 0; i < static_cast<int>(icons.size()); ++i) {
+            if (icons[static_cast<std::size_t>(i)]
+                && icons[static_cast<std::size_t>(i)]->isFocusable()) {
+                m_grid->focusGlobalIndex(i, true);
+                break;
+            }
+        }
+        if (auto* cur = m_grid->focusManager().current())
+            focusManager().setFocus(cur);
+        updateCursor();
+    }
     // The panel is sized from the laid-out folder grid, so place it afterwards.
     if (m_folderZoom) {
         const nxui::Color tint = switchu::folders::colorForIndex(folder->colorIndex);
@@ -3239,9 +3368,63 @@ void WiiUMenuApp::openCapturedFolder() {
         m_audio.playSfx(Sfx::ModalShow);
 }
 
+void WiiUMenuApp::refreshOpenFolderChrome() {
+    if (m_openFolderId == 0)
+        return;
+    // Never retarget FolderZoom mid-close: showStatic() drops the close
+    // onDone callback, which leaves m_folderClosing stuck (empty folder +
+    // soft-lock until a non-animated Home close). Leave-splash handoff can
+    // call here right as the user presses B.
+    if (m_folderClosing) {
+        DebugLog::log("[folders] chrome refresh skipped — close in progress id=%u",
+                      m_openFolderId);
+        return;
+    }
+    const auto* folder = m_folderStore.find(m_openFolderId);
+    if (!folder)
+        return;
+
+    // Leave-restore can open the folder before the grid has its final content
+    // rect. Re-anchor the glass panel + title pill once HOME is interactive so
+    // the folder name does not stay missing / off-screen.
+    const nxui::Rect panel = folderPanelRect();
+    if (m_folderZoom) {
+        const nxui::Color tint = switchu::folders::colorForIndex(folder->colorIndex);
+        m_folderZoom->showStatic(panel, tint);
+    }
+    if (m_folderHeaderLabel) {
+        m_folderHeaderLabel->setText(folder->name);
+        m_folderHeaderLabel->setTextColor(m_theme.textPrimary);
+    }
+    placeFolderHeader(panel);
+    m_folderHeaderAnim.setImmediate(1.f);
+    syncFolderHeader();
+    DebugLog::log("[folders] chrome refreshed id=%u name=%s headerY=%.0f",
+                  m_openFolderId, folder->name.c_str(), m_folderHeaderRest.y);
+}
+
 nxui::Rect WiiUMenuApp::folderPanelRect() const {
     if (!m_grid)
         return kFolderGridRect;
+
+    // Single-row mode has no page-sized grid to wrap: contentRect() would be
+    // the whole screen band (huge). Hug the carousel instead, using the same
+    // geometry as IconGrid::dynamicIconRect so the plate tracks the row.
+    if (m_appLayoutMode == AppLayoutMode::DynamicLine) {
+        const nxui::Rect grid = m_grid->rect();
+        const float centerY = grid.y + grid.height * 0.66f;
+        constexpr float baseCellH = 150.f;
+        constexpr float focusScale = 1.36f;
+        constexpr float sideLift = 32.f;
+        constexpr float padY = 20.f;
+        const float focusH = baseCellH * focusScale;
+        const float top = centerY - focusH * 0.5f - sideLift - padY;
+        const float bottom = centerY + focusH * 0.5f + padY;
+        const float x = grid.x + 48.f;
+        const float w = std::max(1.f, grid.width - 96.f);
+        return {x, top, w, bottom - top};
+    }
+
     const nxui::Rect content = m_grid->contentRect();
     // Tighten the vertical margin (evenly) when the tallest folder grid would
     // push the panel into the title pill.
@@ -3257,6 +3440,23 @@ void WiiUMenuApp::placeFolderHeader(const nxui::Rect& panel) {
     m_folderHeaderRest.y = std::max(kFolderHeaderMinY,
         panel.y - kFolderHeaderGap - m_folderHeaderRest.height);
     syncFolderHeader();
+    syncSteamGridDbLogoArea();
+}
+
+void WiiUMenuApp::syncSteamGridDbLogoArea() {
+    if (!m_steamGridDbBackdrop)
+        return;
+    // Single-row folders draw the title bubble in the band the logo normally
+    // occupies. Raise the logo into the space above the bubble (below the top
+    // HUD) so the two never overlap.
+    if (m_openFolderId != 0 && m_appLayoutMode == AppLayoutMode::DynamicLine) {
+        const float bottom = std::max(120.f, m_folderHeaderRest.y - 6.f);
+        const float top = std::max(96.f, bottom - 150.f);
+        m_steamGridDbBackdrop->setLogoArea(
+            {370.f, top, 540.f, std::max(40.f, bottom - top)});
+    } else {
+        m_steamGridDbBackdrop->setLogoArea({370.f, 149.f, 540.f, 150.f});
+    }
 }
 
 void WiiUMenuApp::syncFolderHeader() {
@@ -3299,6 +3499,13 @@ void WiiUMenuApp::closeFolder(bool preserveEditMode, bool animated) {
         snapCursorToFocus();
         return;
     }
+
+    DebugLog::log("[folders] close id=%u animated=%d", oldId, animated ? 1 : 0);
+
+    // Clear in-folder SGDB art as soon as close begins so a quick open of
+    // another folder never inherits the previous title's hero.
+    if (m_steamGridDbBackdrop)
+        m_steamGridDbBackdrop->showTitle(0, true);
 
     if (m_folderBackdrop) m_folderBackdrop->hide(FolderZoom::kCloseDur);
 
@@ -3351,8 +3558,16 @@ void WiiUMenuApp::finishCloseFolder(std::uint32_t oldId, bool preserveEditMode) 
     if (m_pageIndicator)
         m_pageIndicator->clearActiveColor();
     m_grid->setRect({kGridRectX, kGridRectY, kGridRectW, kGridRectH});
-    applyDisplayModel(buildRootFolderModel(), folderTitleId(oldId), false);
+    applyDisplayModel(buildRootFolderModel(), folderTitleId(oldId), false, {}, true);
     syncPageIndicator();
+    // The folder title is gone again: put the single-row logo back in its
+    // default band.
+    syncSteamGridDbLogoArea();
+    // Drop in-folder hero art immediately so the next folder open does not
+    // briefly (or permanently) show the previous title's artwork.
+    if (m_steamGridDbBackdrop)
+        m_steamGridDbBackdrop->showTitle(0, true);
+    showFocusedSteamGridDbArtwork(true);
     if (preserveEditMode) {
         // Focus is on the folder we just left; use that as the root placement target.
         m_editTargetIndex = findTitleIndex(folderTitleId(oldId));
@@ -3551,6 +3766,10 @@ std::shared_ptr<GlossyIcon> WiiUMenuApp::makeIcon(const AppEntry& entry) {
         icon->setNotLaunchable(false);
         icon->setCornerRadius(m_theme.iconCornerRadius);
         icon->setPanelOpacity(0.96f);
+        icon->setOnActivate([this]() {
+            if (deletePageAvailable())
+                showDeletePageDialog();
+        });
         return icon;
     }
 
@@ -3676,7 +3895,7 @@ std::shared_ptr<GlossyIcon> WiiUMenuApp::makeIcon(const AppEntry& entry) {
     icon->setAccessibilityHint(entry.isLaunchable()
         ? i18n.tr("accessibility.hints.game_launchable", "A to launch. Plus for options. Y to move. ZL or ZR to change page.")
         : i18n.tr("accessibility.hints.game_blocked", "A to show why this item is blocked."));
-    // Texture is set by IconStreamer::onPageChanged() — not here.
+    // Texture is set by IconStreamer::onPageChanged() ΓÇö not here.
     icon->setCornerRadius(m_theme.iconCornerRadius);
     icon->setLoadingColor(m_theme.cursorNormal);
     icon->setIsGameCard(entry.isGameCard());
@@ -3769,6 +3988,10 @@ void WiiUMenuApp::buildGrid() {
     m_grid = std::make_shared<IconGrid>();
     m_grid->setRect({kGridRectX, kGridRectY, kGridRectW, kGridRectH});
     m_grid->setLayoutMode(m_appLayoutMode);
+    // The grid starts from IconGrid's own default (teleport), so the configured
+    // mode has to be applied here too: without it the first page changes after
+    // boot ignored the Translate setting until a rebuild happened to fix it.
+    m_grid->setSlideTransition(m_config.pageTransitionMode == 0);
     m_grid->setup(std::move(icons),
                   std::clamp(m_config.gridColumns, 1, 8),
                   std::clamp(m_config.gridRows, 1, 5),
@@ -3783,7 +4006,6 @@ void WiiUMenuApp::buildGrid() {
     m_clock = std::make_shared<DateTimeWidget>();
     m_clock->setSize(150, 62);
     m_clock->setMarginTop(14.f);
-    m_clock->setMarginLeft(24.f);
     m_clock->setFont(&m_fontNormal);
     m_clock->setSmallFont(&m_fontSmall);
     m_clock->setClockService(&m_clockService);
@@ -3801,7 +4023,24 @@ void WiiUMenuApp::buildGrid() {
     m_battery->setForceLiquidGlass(true);
     m_battery->setBlurEnabled(false);
 
-    buildUserAvatarBar(!m_fastReturnRequested);
+    m_profileLock = std::make_shared<ProfileLockButton>();
+    m_profileLock->setSize(kProfileLockWidth, kProfileLockHeight);
+    m_profileLock->setMinWidth(kProfileLockWidth);
+    m_profileLock->setMinHeight(kProfileLockHeight);
+    m_profileLock->setShrink(0.f);
+    m_profileLock->setMarginTop(14.f);
+    m_profileLock->setMarginLeft(24.f);
+    m_profileLock->setCornerRadius(m_theme.cellCornerRadius);
+    // The HUD row spreads its items evenly; balance the square tile against the
+    // battery widget so the clock lands on the screen's centre line.
+    m_profileLock->setMarginRight((150.f + 24.f) - (kProfileLockWidth + 24.f));
+    m_profileLock->setTheme(&m_theme);
+    m_profileLock->setOnActivate([this]() {
+        m_audio.playSfx(Sfx::Activate);
+        openProfileCarousel();
+    });
+
+    loadProfiles(!m_fastReturnRequested);
 
     m_titlePill = std::make_shared<TitlePillWidget>();
     m_titlePill->setPosition(0, 630.f);
@@ -4099,9 +4338,8 @@ void WiiUMenuApp::buildGrid() {
     m_topHud->setWireframeEnabled(false);
     m_topHud->setJustifyContent(nxui::JustifyContent::SPACE_BETWEEN);
     m_topHud->setAlignItems(nxui::AlignItems::FLEX_START);
+    m_topHud->addChild(m_profileLock);
     m_topHud->addChild(m_clock);
-    if (m_userAvatarBar)
-        m_topHud->addChild(m_userAvatarBar);
     m_topHud->addChild(m_battery);
     m_topHud->layout();
 
@@ -4148,6 +4386,10 @@ void WiiUMenuApp::buildGrid() {
     m_steamGridDbPicker->onClosed([this]() {
         if (m_gameOptions && m_gameOptions->isActive())
             focusManager().setFocus(m_gameOptions.get());
+        else if (m_folderOptions && m_folderOptions->isActive())
+            focusManager().setFocus(m_folderOptions.get());
+        else if (m_settings && m_settings->isActive())
+            focusManager().setFocus(m_settings.get());
     });
     m_steamGridDbPicker->onSearch([this]() { editSteamGridDbPickerQuery(); });
     m_steamGridDbPicker->onApply(
@@ -4155,8 +4397,33 @@ void WiiUMenuApp::buildGrid() {
                const SteamGridDbManager::Candidate& candidate) {
             applySteamGridDbCandidate(browse, candidate);
         });
-    m_overlayLayer->addChild(m_steamGridDbPicker);
+    m_steamGridDbPicker->onPickGame(
+        [this](const SteamGridDbManager::BrowseResult& browse,
+               const SteamGridDbManager::GameMatch& match) {
+            if (browse.titleId == 0 || match.id <= 0) return;
+            if (m_steamGridDbBrowseFuture.valid() || m_steamGridDbApplyFuture.valid()
+                || m_steamGridDb.running())
+                return;
+            if (m_overlayLayer && m_steamGridDbPicker) {
+                m_overlayLayer->removeChild(m_steamGridDbPicker.get());
+                m_overlayLayer->addChild(m_steamGridDbPicker);
+            }
+            m_steamGridDbPicker->showLoading(browse.titleId, browse.title, browse.query,
+                                             browse.kind, true);
+            m_steamGridDbPicker->setMessage("Loading artwork for " + match.name + "...",
+                                            true);
+            focusManager().setFocus(m_steamGridDbPicker.get());
+            m_steamGridDbBrowseFuture = std::async(std::launch::async,
+                [apiKey = m_config.steamGridDbApiKey, browse, match]() {
+                    return SteamGridDbManager::browseGame(
+                        apiKey, browse.titleId, browse.title, browse.query,
+                        browse.kind, match.id, match.name);
+                });
+        });
+    // Picker is added after folder/game options so it paints above them; show
+    // path also re-parents it to the top of the overlay stack.
     createFolderOptions();
+    m_overlayLayer->addChild(m_steamGridDbPicker);
     createControllerTest();
 
     m_overlayLayer->addChild(m_contextMenu);
@@ -4170,15 +4437,37 @@ void WiiUMenuApp::buildGrid() {
     root.addChild(m_overlayLayer);
 
 #ifdef SWITCHU_MENU
+    // Folder leave-restore must run after HUD/header/sidebars exist so
+    // requestOpenFolder can capture the frosted root backdrop correctly.
+    if (m_leaveRestoreFolderId != 0) {
+        const std::uint32_t folderId = m_leaveRestoreFolderId;
+        const std::uint64_t focusId = m_leaveRestoreFolderFocus;
+        m_leaveRestoreFolderId = 0;
+        m_leaveRestoreFolderFocus = 0;
+        requestOpenFolder(folderId, focusId);
+        DebugLog::log("[leave] folder restore capture armed id=%u", folderId);
+    }
+
     // Leave-session restore already placed page/folder/focus to match the
     // title splash. Calling focusTitle(suspended) afterward would reopen a
     // folder under a mismatched root splash when returning from applets.
-    if (!restoredLeaveSession) {
-        if (!focusTitle(m_launcher.suspendedTitleId())) {
+    //
+    // Still, if the suspended title is already visible in the restored model,
+    // prefer it over a stale leave-session focus (fast title hops can capture
+    // the previous blue-ring target while the green pulse was already correct).
+    if (restoredLeaveSession) {
+        const std::uint64_t suspended = m_launcher.suspendedTitleId();
+        if (suspended != 0) {
+            const int idx = findTitleIndex(suspended);
+            if (idx >= 0 && m_grid->focusGlobalIndex(idx)) {
+                if (auto* focused = m_grid->focusManager().current())
+                    focusManager().setFocus(focused);
+            }
+        } else if (!focusManager().current()) {
             if (auto* firstIcon = m_grid->focusManager().current())
                 focusManager().setFocus(firstIcon);
         }
-    } else if (!focusManager().current()) {
+    } else if (!focusTitle(m_launcher.suspendedTitleId())) {
         if (auto* firstIcon = m_grid->focusManager().current())
             focusManager().setFocus(firstIcon);
     }
@@ -4186,7 +4475,12 @@ void WiiUMenuApp::buildGrid() {
     if (auto* firstIcon = m_grid->focusManager().current())
         focusManager().setFocus(firstIcon);
 #endif
-    updateCursor();
+    if (m_cursor && focusManager().current()) {
+        m_cursor->moveTo(focusManager().current()->focusRect().expanded(4.f), 0.f);
+        m_cursor->setVisible(true);
+    } else {
+        updateCursor();
+    }
     showFocusedSteamGridDbArtwork();
     m_themeRenderDebugFrames = 12;
 
@@ -4291,30 +4585,94 @@ void WiiUMenuApp::loadSoundPreset(const std::string& preset) {
     std::string musicDir = musicBase + "/music";
     std::error_code ec;
     if (std::filesystem::is_directory(musicDir, ec)) {
-        std::vector<std::string> tracks;
+        std::vector<std::string> rootTracks;
+        std::vector<std::string> albumFolders;
         ec.clear();
         for (const auto& entry : std::filesystem::directory_iterator(musicDir, ec)) {
             if (ec)
                 break;
-
-            std::string name = entry.path().filename().string();
-            if (name.size() > 4 && name.substr(name.size() - 4) == ".mp3")
-                tracks.push_back(name);
+            const auto name = entry.path().filename().string();
+            if (name.empty() || name[0] == '.')
+                continue;
+            std::error_code entryEc;
+            if (entry.is_directory(entryEc)) {
+                albumFolders.push_back(name);
+            } else if (entry.is_regular_file(entryEc) && isMp3Filename(name)) {
+                rootTracks.push_back(name);
+            }
         }
-        std::sort(tracks.begin(), tracks.end(), [](const std::string& left, const std::string& right) {
-            const bool leftIsHome = (left == "home.mp3");
-            const bool rightIsHome = (right == "home.mp3");
-            if (leftIsHome != rightIsHome)
-                return leftIsHome;
-            return left < right;
-        });
-        for (const auto& t : tracks)
-            m_audio.loadTrack(musicDir + "/" + t);
-        DebugLog::log("[audio] Loaded %zu music tracks", tracks.size());
+        sortMusicTrackNames(rootTracks);
+        std::sort(albumFolders.begin(), albumFolders.end());
+
+        size_t loaded = 0;
+        for (const auto& t : rootTracks) {
+            if (m_audio.loadTrack(musicDir + "/" + t))
+                ++loaded;
+        }
+        for (const auto& folder : albumFolders) {
+            const std::string albumDir = musicDir + "/" + folder;
+            std::vector<std::string> albumTracks;
+            ec.clear();
+            for (const auto& entry : std::filesystem::directory_iterator(albumDir, ec)) {
+                if (ec)
+                    break;
+                std::error_code entryEc;
+                if (!entry.is_regular_file(entryEc))
+                    continue;
+                const auto name = entry.path().filename().string();
+                if (isMp3Filename(name))
+                    albumTracks.push_back(name);
+            }
+            if (albumTracks.empty())
+                continue;
+            sortMusicTrackNames(albumTracks);
+            auto cover = loadAlbumFolderCover(albumDir);
+            if (!cover.empty())
+                m_audio.setFolderCover(folder, std::move(cover));
+            for (const auto& t : albumTracks) {
+                if (m_audio.loadTrack(albumDir + "/" + t, folder))
+                    ++loaded;
+            }
+            // If no folder.jpg, reuse the first track APIC as the album thumb.
+            if (!m_audio.folderCoverArt(folder)) {
+                for (const auto& track : m_audio.tracks()) {
+                    if (track.albumFolder == folder && !track.coverArt.empty()) {
+                        m_audio.setFolderCover(folder, track.coverArt);
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (!m_config.musicPlaylistOrder.empty())
+            m_audio.applyPlaylistOrder(m_config.musicPlaylistOrder);
+        m_audio.setShuffle(m_config.musicShuffle);
+        m_audio.setRepeatMode(static_cast<MusicRepeatMode>(
+            std::clamp(m_config.musicRepeatMode, 0, 2)));
+        DebugLog::log("[audio] Loaded %zu music tracks (%zu albums)",
+                      loaded, albumFolders.size());
     } else {
         DebugLog::log("[audio] No music directory for preset '%s'", effectivePreset.c_str());
     }
 }
+
+void WiiUMenuApp::persistMusicPlaybackState(bool updateEnabledFlag) {
+    m_config.musicTrackIndex = m_audio.currentIndex();
+    m_config.musicPositionSeconds = m_audio.positionSeconds();
+    m_config.musicShuffle = m_audio.shuffle();
+    m_config.musicRepeatMode = static_cast<int>(m_audio.repeatMode());
+    m_config.musicPlaylistOrder = m_audio.playlistOrderKeys();
+    if (updateEnabledFlag)
+        m_config.musicEnabled = m_audio.isPlaying();
+}
+
+void WiiUMenuApp::resumeMenuMusicAfterReturn() {
+    m_audio.setMusicFade(1.f);
+    m_musicFadeActive = false;
+    if (m_config.musicEnabled && m_audio.trackCount() > 0)
+        m_audio.play();
+}
+
 
 void WiiUMenuApp::changeSoundPreset(const std::string& preset) {
     const std::string effectivePreset = resolveSoundPresetId(preset);
@@ -4386,6 +4744,17 @@ void WiiUMenuApp::refreshAppList() {
     if (m_userSelect && m_userSelect->isActive()) m_userSelect->hide();
 
     m_refreshPrevPage = m_grid ? m_grid->currentPage() : 0;
+    m_refreshPrevFocusTitleId = 0;
+    if (m_grid) {
+        // finalizeRefresh() rebuilds every icon object, so the grid's focus
+        // manager falls back to the first slot. Remember what was focused and
+        // put it back, otherwise the cursor visibly jumps to slot 1 shortly
+        // after boot while the user is already browsing.
+        if (auto* focused = m_grid->focusManager().current())
+            if (focused->tag() == "glossy_icon")
+                m_refreshPrevFocusTitleId =
+                    static_cast<GlossyIcon*>(focused)->titleId();
+    }
     m_asyncRefreshPending = true;
     m_refreshQueued = false;
 
@@ -4431,8 +4800,8 @@ void WiiUMenuApp::finalizeRefresh() {
     }
 
     // The icons about to be replaced are held as raw pointers by both focus
-    // managers, and FocusManager::changeFocusTo calls onFocusLost() — a virtual
-    // — on whatever it thinks is focused. Destroying them without saying so
+    // managers, and FocusManager::changeFocusTo calls onFocusLost() ΓÇö a virtual
+    // ΓÇö on whatever it thinks is focused. Destroying them without saying so
     // leaves that call reading a freed vtable, which is what two crash reports
     // from a clean install show: a garbage pointer in x1, then
     // ldr x1,[x1,#40]; blr x1 inside changeFocusTo.
@@ -4461,6 +4830,7 @@ void WiiUMenuApp::finalizeRefresh() {
 
     GridLayoutMetrics gridMetrics = computeGridLayoutMetrics();
 
+    m_grid->setSlideTransition(m_config.pageTransitionMode == 0);
     m_grid->setup(std::move(icons),
                   std::clamp(m_config.gridColumns, 1, 8),
                   std::clamp(m_config.gridRows, 1, 5),
@@ -4500,6 +4870,17 @@ void WiiUMenuApp::finalizeRefresh() {
     // until their background decode completes.
     for (auto& icon : m_grid->allIcons())
         icon->forceVisible();
+    // A refresh rebuilds every icon object; without this the grid's focus
+    // manager falls back to the first slot and the cursor jumps to position 1
+    // while the user is browsing (reported right after boot).
+    if (m_refreshPrevFocusTitleId != 0) {
+        const int idx = findTitleIndex(m_refreshPrevFocusTitleId);
+        if (idx >= 0 && m_grid->focusGlobalIndex(idx, true)) {
+            if (auto* focused = m_grid->focusManager().current())
+                focusManager().setFocus(focused);
+        }
+        m_refreshPrevFocusTitleId = 0;
+    }
     // If the rebuilt grid has nothing focusable, the app focus manager must be
     // left holding nothing rather than whatever it held before.
     focusManager().setFocus(m_grid->focusManager().current());
@@ -4515,6 +4896,75 @@ void WiiUMenuApp::finalizeRefresh() {
 #endif
 
 void WiiUMenuApp::onUpdate(float dt) {
+    if (m_systemAsleep) {
+        // Console is asleep. Application stopped presenting frames, so the only
+        // work left is reading the wake notification: the frame work in
+        // onUpdateAwake() kept the console warm for the whole sleep otherwise.
+        pollSleepNotifications();
+        return;
+    }
+
+    onUpdateAwake(dt);
+}
+
+void WiiUMenuApp::enterSystemSleep() {
+    if (m_systemAsleep)
+        return;
+    m_systemAsleep = true;
+    DebugLog::log("[power] console sleeping: frames stopped, music paused");
+
+    // Music keeps the mixer feeding the audio path for the whole sleep. The
+    // wake path restores exactly what was audible before.
+    m_musicWasPlayingBeforeSleep = m_audio.isPlaying();
+    if (m_musicWasPlayingBeforeSleep) {
+        persistMusicPlaybackState();
+        m_audio.pause();
+    }
+
+    // Stop presenting. A loop that keeps submitting frames never lets the
+    // console settle into its low-power sleep state.
+    app().setSleeping(true);
+}
+
+void WiiUMenuApp::leaveSystemSleep() {
+    if (!m_systemAsleep)
+        return;
+    m_systemAsleep = false;
+    app().setSleeping(false);
+
+    if (m_musicWasPlayingBeforeSleep && m_config.musicEnabled)
+        m_audio.play();
+    m_musicWasPlayingBeforeSleep = false;
+
+    // Notifications pushed during sleep were only inspected for the wake
+    // message, so re-read the catalogue and realign the screen state.
+    m_refreshQueued = true;
+    m_deferredRefreshFrames = std::max(m_deferredRefreshFrames, 3);
+    updateCursor();
+    DebugLog::log("[power] console awake: presentation resumed");
+}
+
+void WiiUMenuApp::pollSleepNotifications() {
+#ifdef SWITCHU_MENU
+    AppletStorage notifySt;
+    while (R_SUCCEEDED(appletPopInteractiveInData(&notifySt))) {
+        switchu::smi::DaemonNotification notif{};
+        s64 sz = 0;
+        appletStorageGetSize(&notifySt, &sz);
+        if (sz >= (s64)sizeof(notif))
+            appletStorageRead(&notifySt, 0, &notif, sizeof(notif));
+        appletStorageClose(&notifySt);
+
+        if (notif.magic != switchu::smi::kNotifyMagic)
+            continue;
+        DebugLog::log("[power] sleep-time notify msg=%u", (unsigned)notif.msg);
+        if (notif.msg == switchu::smi::MenuMessage::WakeUp)
+            leaveSystemSleep();
+    }
+#endif
+}
+
+void WiiUMenuApp::onUpdateAwake(float dt) {
     updateLeaveSplashHandoff(dt);
     pollDeferredLeaveCapture();
     const float motionDt = m_leaveMotionFrozen ? 0.f : dt;
@@ -4669,7 +5119,7 @@ void WiiUMenuApp::onUpdate(float dt) {
                 if (m_addPageHold >= 1.f) {
                     m_addPageHold = 0.f;
                     m_addPageTouchHold = false;
-                    createFolderPage();
+                    createPage();
                 }
             } else {
                 m_addPageHold = std::max(0.f, m_addPageHold - dt / (kAddPageHoldDur * 0.4f));
@@ -4735,14 +5185,14 @@ void WiiUMenuApp::onUpdate(float dt) {
                               m_deferredProfileList->result,
                               static_cast<int>(m_pendingProfileUids.size()));
                 if (m_pendingProfileUids.empty())
-                    appendAddUserButton();
+                    finishProfileLoading();
             }
         } catch (const std::exception& ex) {
             DebugLog::log("[profiles] deferred enumeration failed: %s", ex.what());
-            appendAddUserButton();
+            finishProfileLoading();
         } catch (...) {
             DebugLog::log("[profiles] deferred enumeration failed: unknown exception");
-            appendAddUserButton();
+            finishProfileLoading();
         }
         m_deferredProfileList.reset();
     }
@@ -4753,7 +5203,7 @@ void WiiUMenuApp::onUpdate(float dt) {
         const bool visibleIconsBusy = m_grid && m_iconStreamer.needsVisibleLoads(
             streamPage, streamPageSize);
         if (!visibleIconsBusy)
-            loadNextUserAvatar();
+            loadNextProfile();
     }
 
     if (m_returnFadeTimer > 0.f)
@@ -4770,10 +5220,20 @@ void WiiUMenuApp::onUpdate(float dt) {
         const float t = m_launchAnim->musicFadeProgress();
         m_audio.setMusicFade(1.f - nxui::Easing::outQuad(t));
         m_musicFadeActive = true;
+        if (t >= 0.98f && m_audio.isPlaying()) {
+            persistMusicPlaybackState();
+            m_audio.pause();
+        }
     } else if (m_musicFadeActive) { // cancel fade if the animation was interrupted
         m_musicFadeActive = false;
         m_audio.setMusicFade(1.f);
     }
+
+    if (m_audioStarted)
+        m_audio.update(dt);
+
+    if (m_quickSettings && m_quickSettings->isActive())
+        m_quickSettings->refreshMusicState();
 
     syncThemePackageTransfer();
     retryPendingBackgroundImage();
@@ -4796,6 +5256,35 @@ void WiiUMenuApp::onUpdate(float dt) {
                                                          m_effectivePreset.icons.basePath));
             DebugLog::log("[init] deferred initial icon/sidebar uploads done");
         }
+    }
+
+
+    // Finish music start only after leave-splash + deferred assets. Doing
+    // Mix_PlayMusic/seek in the same burst as sidebar/icon GPU uploads was
+    // freezing AppletReturn (menu.log stopped right after deferred uploads).
+    if (m_audioPlaybackRestorePending
+        && m_audioStarted
+        && !leaveSplashActive()
+        && m_deferredInitialAssetFrames == 0) {
+        if (m_audioPlaybackRestoreDelayFrames > 0)
+            --m_audioPlaybackRestoreDelayFrames;
+        if (m_audioPlaybackRestoreDelayFrames == 0) {
+            DebugLog::log("[boot] restoring music playback");
+            m_audioPlaybackRestorePending = false;
+            m_audio.restorePlaybackState(m_config.musicTrackIndex,
+                                         m_config.musicPositionSeconds,
+                                         m_config.musicEnabled);
+            // Seek + unmute immediately — splash/deferred uploads are already done.
+            m_audio.updateDeferredSeek();
+            m_audioSeekAfterHoldoff = false;
+            DebugLog::log("[boot] music playback restore returned");
+        }
+    } else if (m_audioSeekAfterHoldoff
+               && !leaveSplashActive()) {
+        DebugLog::log("[boot] applying deferred music seek");
+        m_audioSeekAfterHoldoff = false;
+        m_audio.updateDeferredSeek();
+        DebugLog::log("[boot] deferred music seek returned");
     }
 
     if (m_audioInitPending) {
@@ -4823,13 +5312,21 @@ void WiiUMenuApp::onUpdate(float dt) {
 
     if (!m_audioStarted && m_audioFuture.valid() &&
         m_audioFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+        DebugLog::log("[boot] audio future ready — applying volume/playlist (playback delayed)");
         m_audioFuture.get();
         m_audio.setVolume(m_config.musicVolume);
         m_audio.setSfxVolume(m_config.sfxVolume);
-        if (m_config.musicEnabled) m_audio.play();
+        m_audio.setShuffle(m_config.musicShuffle);
+        m_audio.setRepeatMode(static_cast<MusicRepeatMode>(
+            std::clamp(m_config.musicRepeatMode, 0, 2)));
+        if (!m_config.musicPlaylistOrder.empty())
+            m_audio.applyPlaylistOrder(m_config.musicPlaylistOrder);
         m_loadedSoundPreset = resolveSoundPresetId(m_config.soundPreset);
         m_audioStarted = true;
-        DebugLog::log("[init] Audio ready (deferred)");
+        m_audioPlaybackRestorePending = true;
+        m_audioPlaybackRestoreDelayFrames = 0; // restore as soon as splash + deferred uploads clear
+        DebugLog::log("[init] Audio ready (deferred); playback restore armed delay=%d",
+                      m_audioPlaybackRestoreDelayFrames);
     }
 
     if (m_presetChangePending && m_audioFuture.valid() &&
@@ -4837,8 +5334,21 @@ void WiiUMenuApp::onUpdate(float dt) {
         m_audioFuture.get();
         m_audio.setVolume(m_config.musicVolume);
         m_audio.setSfxVolume(m_config.sfxVolume);
-        if (m_config.musicEnabled)
-            m_audio.play();
+        m_audio.setShuffle(m_config.musicShuffle);
+        m_audio.setRepeatMode(static_cast<MusicRepeatMode>(
+            std::clamp(m_config.musicRepeatMode, 0, 2)));
+        if (!m_config.musicPlaylistOrder.empty())
+            m_audio.applyPlaylistOrder(m_config.musicPlaylistOrder);
+        // A preset change swaps the whole playlist, so the saved index/position
+        // can point past the new tracks. Start the new theme's music from its
+        // first track, audibly: restorePlaybackState mutes until its deferred
+        // seek lands, and nothing applies that seek outside the boot path —
+        // which is why changing theme used to leave the menu silent until the
+        // console was restarted.
+        m_audio.restorePlaybackState(0, 0.f, m_config.musicEnabled);
+        m_config.musicTrackIndex = 0;
+        m_config.musicPositionSeconds = 0.f;
+        m_audioSeekAfterHoldoff = false;
         m_loadedSoundPreset = m_pendingSoundPreset.empty() ? resolveSoundPresetId(m_config.soundPreset)
                                                            : m_pendingSoundPreset;
         m_pendingSoundPreset.clear();
@@ -4873,7 +5383,10 @@ void WiiUMenuApp::onUpdate(float dt) {
 
             switch (notif.msg) {
             case switchu::smi::MenuMessage::HomeRequest:
-                m_sysMsg.pushAction(SysAction::HomeButton);
+                // Already on the menu — dismiss open folders/overlays. Do not
+                // reuse HomeButton: that path re-focuses a title and can reopen
+                // the folder (and re-capture a dimmed frosted backdrop).
+                m_sysMsg.pushAction(SysAction::HomeDismiss);
                 break;
             case switchu::smi::MenuMessage::ApplicationExited:
                 m_launcher.setAppRunning(false);
@@ -4930,7 +5443,14 @@ void WiiUMenuApp::onUpdate(float dt) {
                                   charging ? 1 : 0);
                 }
                 break;
+            case switchu::smi::MenuMessage::SleepSequence:
+                // The daemon announces the sleep while the applet can still
+                // react: stop presenting, pause the music and park the frame
+                // work before the console stops responding.
+                enterSystemSleep();
+                break;
             case switchu::smi::MenuMessage::WakeUp:
+                leaveSystemSleep();
                 m_clockService.invalidate();
                 // Time may have jumped across the day/night boundary while
                 // asleep; force an immediate re-evaluation on the next check.
@@ -5007,6 +5527,7 @@ void WiiUMenuApp::onUpdate(float dt) {
         !(m_gameOptions && m_gameOptions->isActive()) &&
         !(m_folderOptions && m_folderOptions->isActive()) &&
         !(m_controllerTest && m_controllerTest->isActive()) &&
+        !(m_profileCarousel && m_profileCarousel->isActive()) &&
         !(m_userSelect && m_userSelect->isActive())) {
         auto* current = focusManager().current();
         if (current && current->tag() == "glossy_icon" && m_grid) {
@@ -5046,11 +5567,13 @@ void WiiUMenuApp::onUpdate(float dt) {
         !m_editMode &&
         !(m_contextMenu && m_contextMenu->isActive()) &&
         !(m_dialog && m_dialog->isActive()) &&
+        !(m_quickSettings && m_quickSettings->isActive()) &&
         !(m_settings && m_settings->isActive()) &&
         !(m_themeShop && m_themeShop->isActive()) &&
         !(m_gameOptions && m_gameOptions->isActive()) &&
         !(m_folderOptions && m_folderOptions->isActive()) &&
         !(m_controllerTest && m_controllerTest->isActive()) &&
+        !(m_profileCarousel && m_profileCarousel->isActive()) &&
         !(m_userSelect && m_userSelect->isActive())) {
         toggleAppLayoutMode();
     }
@@ -5079,7 +5602,9 @@ void WiiUMenuApp::onUpdate(float dt) {
         && !(m_gameOptions && m_gameOptions->isActive())
         && !(m_folderOptions && m_folderOptions->isActive())
         && !(m_controllerTest && m_controllerTest->isActive())
-        && !(m_userSelect && m_userSelect->isActive()))
+        && !(m_profileCarousel && m_profileCarousel->isActive())
+        && !(m_userSelect && m_userSelect->isActive())
+        && !(m_progressDialog && m_progressDialog->isActive()))
     {
         handleTouch();
     }
@@ -5110,15 +5635,23 @@ void WiiUMenuApp::onUpdate(float dt) {
         m_steamGridDbPicker->handleTouch(app().input());
 
     if (!debugTouchBlocked && !textEntryActive &&
-        m_folderOptions && m_folderOptions->isActive())
+        m_folderOptions && m_folderOptions->isActive()
+        && !(m_steamGridDbPicker && m_steamGridDbPicker->isActive()))
         m_folderOptions->handleTouch(app().input());
 
     if (!debugTouchBlocked && !textEntryActive &&
         m_controllerTest && m_controllerTest->isActive())
         m_controllerTest->handleTouch(app().input());
 
+    if (!debugTouchBlocked && !textEntryActive &&
+        m_profileCarousel && m_profileCarousel->isActive())
+        m_profileCarousel->handleTouch(app().input());
+
     if (!debugTouchBlocked && m_textEntry && m_textEntry->isActive())
         m_textEntry->handleTouch(app().input());
+
+    if (!debugTouchBlocked && m_progressDialog && m_progressDialog->isActive())
+        m_progressDialog->handleTouch(app().input());
 
     if (m_dialogWasActive && !dialogActiveNow) {
         if (isCurrentFocusableWidget(m_dialogReturnFocus)) {
@@ -5144,6 +5677,8 @@ void WiiUMenuApp::onUpdate(float dt) {
                 focusManager().setFocus(m_themeShop.get());
             } else if (m_controllerTest && m_controllerTest->isActive()) {
                 focusManager().setFocus(m_controllerTest.get());
+            } else if (m_profileCarousel && m_profileCarousel->isOpen()) {
+                focusManager().setFocus(m_profileCarousel.get());
             } else if (m_gameOptions && m_gameOptions->isActive()) {
                 focusManager().setFocus(m_gameOptions.get());
             } else if (m_folderOptions && m_folderOptions->isActive()) {
@@ -5214,10 +5749,47 @@ std::vector<WiiUMenuApp::ActionHint> WiiUMenuApp::buildActionHints() {
         return hints;
 
     if (m_quickSettings && m_quickSettings->isActive()) {
-        add(dpadGlyph(), i18n.tr("hint.navigate", "Navigate"));
-        add(buttonGlyph(nxui::Button::A), i18n.tr("hint.select", "Select"));
-        add(buttonGlyph(nxui::Button::B) + buttonGlyph(nxui::Button::L),
-            i18n.tr("hint.close", "Close"));
+        if (m_quickSettings->isCoverFullscreen()) {
+            add(dpadGlyph(), i18n.tr("hint.navigate", "Navigate"));
+            add(buttonGlyph(nxui::Button::A), i18n.tr("hint.select", "Select"));
+            add(buttonGlyph(nxui::Button::ZL), i18n.tr("quicksettings.prev", "Prev"));
+            add(buttonGlyph(nxui::Button::ZR), i18n.tr("quicksettings.next", "Next"));
+            add(buttonGlyph(nxui::Button::R), i18n.tr("quicksettings.play_pause", "Play/Pause"));
+            add(buttonGlyph(nxui::Button::LStick), i18n.tr("quicksettings.repeat", "Repeat"));
+            add(buttonGlyph(nxui::Button::RStick), i18n.tr("quicksettings.shuffle", "Shuffle"));
+            add(buttonGlyph(nxui::Button::Plus),
+                i18n.tr("quicksettings.playlist", "Playlist"));
+            add(buttonGlyph(nxui::Button::B) + buttonGlyph(nxui::Button::Minus),
+                i18n.tr("hint.close", "Close"));
+            return hints;
+        }
+        if (m_quickSettings->isPlaylistReorderMode()) {
+            add(dpadGlyph(), i18n.tr("hint.move", "Move"));
+            add(buttonGlyph(nxui::Button::A), i18n.tr("hint.place", "Place"));
+            add(buttonGlyph(nxui::Button::B), i18n.tr("hint.cancel", "Cancel"));
+        } else if (m_quickSettings->isPlaylistOpen()) {
+            add(dpadGlyph(), i18n.tr("hint.navigate", "Navigate"));
+            add(buttonGlyph(nxui::Button::A), i18n.tr("hint.select", "Select"));
+            if (!m_quickSettings->hasAlbumFolders())
+                add(buttonGlyph(nxui::Button::Y), i18n.tr("hint.move", "Move"));
+            add(buttonGlyph(nxui::Button::X), i18n.tr("hint.artwork", "Art"));
+            add(buttonGlyph(nxui::Button::Plus), i18n.tr("quicksettings.playlist", "Playlist"));
+            if (m_quickSettings->isCoverFullscreen() == false)
+                add(buttonGlyph(nxui::Button::Minus), i18n.tr("hint.fullscreen", "Fullscreen"));
+            add(buttonGlyph(nxui::Button::B), i18n.tr("hint.back", "Back"));
+        } else {
+            add(dpadGlyph(), i18n.tr("hint.navigate", "Navigate"));
+            add(buttonGlyph(nxui::Button::A), i18n.tr("hint.select", "Select"));
+            add(buttonGlyph(nxui::Button::ZL), i18n.tr("quicksettings.prev", "Prev"));
+            add(buttonGlyph(nxui::Button::ZR), i18n.tr("quicksettings.next", "Next"));
+            add(buttonGlyph(nxui::Button::R), i18n.tr("quicksettings.play_pause", "Play/Pause"));
+            add(buttonGlyph(nxui::Button::Plus), i18n.tr("quicksettings.playlist", "Playlist"));
+            add(buttonGlyph(nxui::Button::Minus), i18n.tr("hint.fullscreen", "Fullscreen"));
+            add(buttonGlyph(nxui::Button::LStick), i18n.tr("quicksettings.repeat", "Repeat"));
+            add(buttonGlyph(nxui::Button::RStick), i18n.tr("quicksettings.shuffle", "Shuffle"));
+            add(buttonGlyph(nxui::Button::B) + buttonGlyph(nxui::Button::L),
+                i18n.tr("hint.close", "Close"));
+        }
         return hints;
     }
 
@@ -5235,6 +5807,12 @@ std::vector<WiiUMenuApp::ActionHint> WiiUMenuApp::buildActionHints() {
         add(buttonGlyph(nxui::Button::A), i18n.tr("hint.confirm", "Confirm"));
         add(buttonGlyph(nxui::Button::B), i18n.tr("hint.back", "Back"));
         addVoiceControls();
+        return hints;
+    }
+
+    if (m_progressDialog && m_progressDialog->isActive()) {
+        if (m_progressDialog->isCancellable())
+            add(buttonGlyph(nxui::Button::B), i18n.tr("hint.cancel", "Cancel"));
         return hints;
     }
 
@@ -5265,6 +5843,23 @@ std::vector<WiiUMenuApp::ActionHint> WiiUMenuApp::buildActionHints() {
 
     if (m_controllerTest && m_controllerTest->isActive())
         return hints;
+
+    if (m_profileCarousel && m_profileCarousel->isActive()) {
+        using Kind = ProfileCarouselScreen::CardKind;
+        const Kind kind = m_profileCarousel->selectedKind();
+        add(dpadGlyph(), i18n.tr("hint.navigate", "Navigate"));
+        if (kind == Kind::Profile)
+            add(buttonGlyph(nxui::Button::A), i18n.tr("profilelock.open_profile", "View profile"));
+        else if (kind == Kind::AddUser)
+            add(buttonGlyph(nxui::Button::A), i18n.tr("profilelock.create_user", "Create"));
+        if (kind != Kind::AddUser && !m_profileCarousel->selectedIsLocked())
+            add(buttonGlyph(nxui::Button::X), kind == Kind::Nobody
+                ? i18n.tr("profilelock.always_ask", "Always ask")
+                : i18n.tr("profilelock.set_default", "Set as default"));
+        add(buttonGlyph(nxui::Button::B), i18n.tr("hint.back", "Back"));
+        addVoiceControls();
+        return hints;
+    }
 
     if (m_gameOptions && m_gameOptions->isActive())
         return hints;
@@ -5331,6 +5926,15 @@ std::vector<WiiUMenuApp::ActionHint> WiiUMenuApp::buildActionHints() {
                 else
                     add(buttonGlyph(nxui::Button::Y), i18n.tr("folder.move", "Move"));
             }
+        } else if (m_openFolderId == 0 && deletePageAvailable()) {
+#ifdef SWITCHU_MENU
+            add(buttonGlyph(nxui::Button::A), i18n.tr("page.delete", "Delete page"));
+            add(buttonGlyph(nxui::Button::Plus), i18n.tr("add.title", "Add"));
+#else
+            add(buttonGlyph(nxui::Button::A), i18n.tr("page.delete", "Delete page"));
+#endif
+        } else if (m_openFolderId != 0 && deletePageAvailable()) {
+            add(buttonGlyph(nxui::Button::A), i18n.tr("page.delete", "Delete page"));
         } else if (m_openFolderId == 0) {
 #ifdef SWITCHU_MENU
             add(buttonGlyph(nxui::Button::Plus), i18n.tr("add.title", "Add"));
@@ -5349,12 +5953,8 @@ std::vector<WiiUMenuApp::ActionHint> WiiUMenuApp::buildActionHints() {
                 break;
             }
         }
-        for (const auto& avatar : m_userAvatarButtons) {
-            if (avatar.get() == cur) {
-                add(buttonGlyph(nxui::Button::A), i18n.tr("hint.profile", "Profile"));
-                break;
-            }
-        }
+        if (m_profileLock && m_profileLock.get() == cur)
+            add(buttonGlyph(nxui::Button::A), i18n.tr("profilelock.choose", "Change profile"));
     }
 
     if (m_navigator.route() == switchu::navigation::Route::Home && !m_editMode) {
@@ -5651,38 +6251,96 @@ void WiiUMenuApp::kickPageArrow(int dir) {
 bool WiiUMenuApp::addPageAvailable() {
     if (m_appLayoutMode == AppLayoutMode::DynamicLine)
         return false;
-    if (m_openFolderId == 0 || !m_grid || m_editMode)
+    if (!m_grid || m_editMode)
         return false;
     if (m_navigator.route() != switchu::navigation::Route::Home || focusRoot() != &rootBox())
         return false;
-    const auto* folder = m_folderStore.find(m_openFolderId);
-    if (!folder || folder->pageCount >= switchu::folders::kMaxFolderPages)
+    if (m_grid->currentPage() < m_grid->totalPages() - 1)
         return false;
-    return m_grid->currentPage() >= m_grid->totalPages() - 1;
+
+    if (m_openFolderId != 0) {
+        const auto* folder = m_folderStore.find(m_openFolderId);
+        if (!folder || folder->pageCount >= switchu::folders::kMaxFolderPages)
+            return false;
+        return true;
+    }
+
+    return m_grid->totalPages() < kMaxHomePages;
 }
 
-void WiiUMenuApp::createFolderPage() {
-    if (m_openFolderId == 0 || !m_grid)
-        return;
-    const auto* folder = m_folderStore.find(m_openFolderId);
-    if (!folder)
+bool WiiUMenuApp::currentPageEmpty() const {
+    if (!m_grid || m_editMode)
+        return false;
+    if (m_appLayoutMode == AppLayoutMode::DynamicLine)
+        return false;
+    if (m_navigator.route() != switchu::navigation::Route::Home)
+        return false;
+    for (auto* icon : m_grid->pageIcons()) {
+        if (icon && icon->titleId() != 0)
+            return false;
+    }
+    return true;
+}
+
+bool WiiUMenuApp::deletePageAvailable() const {
+    if (!currentPageEmpty() || !m_grid)
+        return false;
+    return m_grid->totalPages() > 1;
+}
+
+void WiiUMenuApp::createPage() {
+    if (!addPageAvailable() || !m_grid)
         return;
 
-    const auto [cols, rows] = folderGridDimensions(m_openFolderId);
+    if (m_openFolderId != 0) {
+        const auto* folder = m_folderStore.find(m_openFolderId);
+        if (!folder)
+            return;
+
+        const auto [cols, rows] = folderGridDimensions(m_openFolderId);
+        const int perPage = std::max(1, cols * rows);
+        const int pages = std::max(folder->pageCount, m_grid->totalPages());
+        if (pages >= switchu::folders::kMaxFolderPages)
+            return;
+        if (!m_folderStore.setPageCount(m_openFolderId, pages + 1))
+            return;
+        if (!saveFoldersOrReport("add_folder_page"))
+            return;
+
+        applyDisplayModel(buildOpenFolderModel(m_openFolderId), 0, false);
+        syncPageIndicator();
+
+        const int target = pages;
+        m_grid->setPage(target - 1);
+        m_grid->startPageTransition(target);
+        if (m_grid->focusGlobalIndex(target * perPage)) {
+            if (auto* cur = m_grid->focusManager().current())
+                focusManager().setFocus(cur);
+        }
+        kickPageArrow(+1);
+        m_audio.playSfx(Sfx::ConfirmPositive);
+        m_accessibility.announce(nxui::I18n::instance().tr(
+            "folder.page_added", "Page added"), true, true);
+        updateCursor();
+        return;
+    }
+
+    const int cols = std::clamp(m_config.gridColumns, 1, 8);
+    const int rows = std::clamp(m_config.gridRows, 1, 5);
     const int perPage = std::max(1, cols * rows);
-    const int pages = std::max(folder->pageCount, m_grid->totalPages());
-    if (pages >= switchu::folders::kMaxFolderPages)
-        return;
-    if (!m_folderStore.setPageCount(m_openFolderId, pages + 1))
-        return;
-    if (!saveFoldersOrReport("add_folder_page"))
+    const int pages = m_grid->totalPages();
+    if (pages >= kMaxHomePages)
         return;
 
-    applyDisplayModel(buildOpenFolderModel(m_openFolderId), 0, false);
+    m_layoutSlots.resize(static_cast<std::size_t>((pages + 1) * perPage), 0);
+    m_layoutDirty = true;
+    saveMenuLayout();
+
+    applyDisplayModel(buildRootFolderModel(), 0, false);
     syncPageIndicator();
 
     const int target = pages;
-    m_grid->setPage(target - 1);
+    m_grid->setPage(std::max(0, target - 1));
     m_grid->startPageTransition(target);
     if (m_grid->focusGlobalIndex(target * perPage)) {
         if (auto* cur = m_grid->focusManager().current())
@@ -5692,6 +6350,217 @@ void WiiUMenuApp::createFolderPage() {
     m_audio.playSfx(Sfx::ConfirmPositive);
     m_accessibility.announce(nxui::I18n::instance().tr(
         "folder.page_added", "Page added"), true, true);
+    updateCursor();
+}
+
+namespace {
+
+bool pageSlotsEmpty(const std::vector<std::uint64_t>& slots, int page, int perPage) {
+    if (perPage <= 0 || page < 0)
+        return true;
+    const int start = page * perPage;
+    const int end = start + perPage;
+    for (int index = start; index < end; ++index) {
+        if (index < static_cast<int>(slots.size()) &&
+            slots[static_cast<std::size_t>(index)] != 0)
+            return false;
+    }
+    return true;
+}
+
+bool removeSlotPage(std::vector<std::uint64_t>& slots, int page, int perPage) {
+    if (perPage <= 0 || page < 0)
+        return false;
+    const int pages = std::max(1,
+        (static_cast<int>(slots.size()) + perPage - 1) / perPage);
+    if (page >= pages || pages <= 1)
+        return false;
+    slots.resize(static_cast<std::size_t>(pages * perPage), 0);
+    slots.erase(slots.begin() + page * perPage,
+                slots.begin() + (page + 1) * perPage);
+    return true;
+}
+
+int removeEmptySlotPages(std::vector<std::uint64_t>& slots, int perPage) {
+    if (perPage <= 0)
+        return 0;
+    int pages = std::max(1,
+        (static_cast<int>(slots.size()) + perPage - 1) / perPage);
+    slots.resize(static_cast<std::size_t>(pages * perPage), 0);
+    int removed = 0;
+    for (int page = pages - 1; page >= 0 && pages - removed > 1; --page) {
+        if (!pageSlotsEmpty(slots, page, perPage))
+            continue;
+        slots.erase(slots.begin() + page * perPage,
+                    slots.begin() + (page + 1) * perPage);
+        ++removed;
+    }
+    return removed;
+}
+
+} // namespace
+
+void WiiUMenuApp::showDeletePageDialog() {
+    if (!deletePageAvailable() || !m_dialog)
+        return;
+
+    auto& i18n = nxui::I18n::instance();
+    m_audio.playSfx(Sfx::ModalShow);
+    m_dialogReturnFocus = focusManager().current();
+    m_dialog->show(
+        i18n.tr("page.delete_title", "Delete page"),
+        i18n.tr("page.delete_message", "This page is empty. What would you like to remove?"),
+        {
+            {i18n.tr("page.delete_this", "Delete this page"), [this]() {
+                m_audio.playSfx(Sfx::ConfirmPositive);
+                deleteCurrentPage();
+            }, true},
+            {i18n.tr("page.delete_unused", "Delete all unused pages"), [this]() {
+                m_audio.playSfx(Sfx::ConfirmPositive);
+                deleteAllUnusedPages();
+            }, true},
+            {i18n.tr("button.cancel", "Cancel"), [this]() {
+                m_audio.playSfx(Sfx::ModalHide);
+                if (m_dialogReturnFocus)
+                    focusManager().setFocus(m_dialogReturnFocus);
+                m_dialogReturnFocus = nullptr;
+            }, true},
+        },
+        0,
+        [this]() {
+            if (m_dialogReturnFocus)
+                focusManager().setFocus(m_dialogReturnFocus);
+            m_dialogReturnFocus = nullptr;
+        });
+    focusManager().setFocus(m_dialog.get());
+}
+
+void WiiUMenuApp::deleteCurrentPage() {
+    if (!m_grid || m_grid->totalPages() <= 1)
+        return;
+    m_dialogReturnFocus = nullptr;
+
+    const int page = m_grid->currentPage();
+    const int perPage = std::max(1, m_grid->iconsPerPage());
+
+    if (m_openFolderId != 0) {
+        auto* folder = m_folderStore.find(m_openFolderId);
+        if (!folder)
+            return;
+        const int pages = std::max(folder->pageCount, m_grid->totalPages());
+        folder->titleIds.resize(static_cast<std::size_t>(pages * perPage), 0);
+        if (!removeSlotPage(folder->titleIds, page, perPage))
+            return;
+        folder->pageCount = std::max(1,
+            (static_cast<int>(folder->titleIds.size()) + perPage - 1) / perPage);
+        if (!saveFoldersOrReport("delete_folder_page"))
+            return;
+
+        const int focusPage = std::min(page, folder->pageCount - 1);
+        applyDisplayModel(buildOpenFolderModel(m_openFolderId), 0, false);
+        syncPageIndicator();
+        m_grid->setPage(focusPage);
+        if (m_grid->focusGlobalIndex(focusPage * perPage)) {
+            if (auto* cur = m_grid->focusManager().current())
+                focusManager().setFocus(cur);
+        }
+        m_accessibility.announce(nxui::I18n::instance().tr(
+            "page.deleted", "Page deleted"), true, true);
+        updateCursor();
+        return;
+    }
+
+    if (!removeSlotPage(m_layoutSlots, page, perPage))
+        return;
+    m_layoutDirty = true;
+    saveMenuLayout();
+
+    const int newPages = std::max(1,
+        (static_cast<int>(m_layoutSlots.size()) + perPage - 1) / perPage);
+    const int focusPage = std::min(page, newPages - 1);
+    applyDisplayModel(buildRootFolderModel(), 0, false);
+    syncPageIndicator();
+    m_grid->setPage(focusPage);
+    if (m_grid->focusGlobalIndex(focusPage * perPage)) {
+        if (auto* cur = m_grid->focusManager().current())
+            focusManager().setFocus(cur);
+    }
+    m_accessibility.announce(nxui::I18n::instance().tr(
+        "page.deleted", "Page deleted"), true, true);
+    updateCursor();
+}
+
+void WiiUMenuApp::deleteAllUnusedPages() {
+    if (!m_grid || m_grid->totalPages() <= 1)
+        return;
+    m_dialogReturnFocus = nullptr;
+
+    const int perPage = std::max(1, m_grid->iconsPerPage());
+    const int stayPage = m_grid->currentPage();
+
+    if (m_openFolderId != 0) {
+        auto* folder = m_folderStore.find(m_openFolderId);
+        if (!folder)
+            return;
+        const int pages = std::max(folder->pageCount, m_grid->totalPages());
+        folder->titleIds.resize(static_cast<std::size_t>(pages * perPage), 0);
+
+        // Count how many empty pages before stayPage so focus can shift left.
+        int removedBefore = 0;
+        for (int page = 0; page < stayPage; ++page) {
+            if (pageSlotsEmpty(folder->titleIds, page, perPage))
+                ++removedBefore;
+        }
+        const int removed = removeEmptySlotPages(folder->titleIds, perPage);
+        if (removed <= 0)
+            return;
+        folder->pageCount = std::max(1,
+            (static_cast<int>(folder->titleIds.size()) + perPage - 1) / perPage);
+        if (!saveFoldersOrReport("delete_unused_folder_pages"))
+            return;
+
+        const int focusPage = std::clamp(stayPage - removedBefore, 0, folder->pageCount - 1);
+        applyDisplayModel(buildOpenFolderModel(m_openFolderId), 0, false);
+        syncPageIndicator();
+        m_grid->setPage(focusPage);
+        if (m_grid->focusGlobalIndex(focusPage * perPage)) {
+            if (auto* cur = m_grid->focusManager().current())
+                focusManager().setFocus(cur);
+        }
+        m_accessibility.announce(nxui::I18n::instance().tr(
+            "page.unused_deleted", "Unused pages deleted"), true, true);
+        updateCursor();
+        return;
+    }
+
+    int removedBefore = 0;
+    {
+        const int pages = std::max(1,
+            (static_cast<int>(m_layoutSlots.size()) + perPage - 1) / perPage);
+        m_layoutSlots.resize(static_cast<std::size_t>(pages * perPage), 0);
+        for (int page = 0; page < stayPage; ++page) {
+            if (pageSlotsEmpty(m_layoutSlots, page, perPage))
+                ++removedBefore;
+        }
+    }
+    const int removed = removeEmptySlotPages(m_layoutSlots, perPage);
+    if (removed <= 0)
+        return;
+    m_layoutDirty = true;
+    saveMenuLayout();
+
+    const int newPages = std::max(1,
+        (static_cast<int>(m_layoutSlots.size()) + perPage - 1) / perPage);
+    const int focusPage = std::clamp(stayPage - removedBefore, 0, newPages - 1);
+    applyDisplayModel(buildRootFolderModel(), 0, false);
+    syncPageIndicator();
+    m_grid->setPage(focusPage);
+    if (m_grid->focusGlobalIndex(focusPage * perPage)) {
+        if (auto* cur = m_grid->focusManager().current())
+            focusManager().setFocus(cur);
+    }
+    m_accessibility.announce(nxui::I18n::instance().tr(
+        "page.unused_deleted", "Unused pages deleted"), true, true);
     updateCursor();
 }
 

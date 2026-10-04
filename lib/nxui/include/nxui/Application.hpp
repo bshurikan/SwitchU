@@ -51,6 +51,12 @@ public:
     void setRenderEnabled(bool e) { m_renderEnabled = e; }
     bool renderEnabled() const    { return m_renderEnabled; }
 
+    /// Low-power console sleep.  No frame is presented, no input is dispatched
+    /// and the loop parks on a 50 ms tick; the activity is still updated slowly
+    /// so it can read the wake notification and resume.
+    void setSleeping(bool s) { m_sleeping = s; }
+    bool sleeping() const    { return m_sleeping; }
+
 private:
     void dispatchInput();
     bool applyPendingActivity();
@@ -63,6 +69,7 @@ private:
     std::unique_ptr<Activity> m_pendingActivity;
     bool m_running = true;
     bool m_renderEnabled = true;
+    bool m_sleeping = false;
     uint64_t m_navHeldMask = 0;
     int m_navHeldFrames = 0;
     int m_navRepeatCountdown = 0;

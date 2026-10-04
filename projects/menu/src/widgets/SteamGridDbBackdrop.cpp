@@ -29,6 +29,19 @@ void SteamGridDbBackdrop::setEnabled(bool enabled) {
     setVisible(enabled);
 }
 
+void SteamGridDbBackdrop::invalidateArtworkCaches() {
+    // Forget which title each uploaded set belongs to. No texture is released
+    // here: a settings change can land mid-frame while the GPU still reads these
+    // images, and clearing the title id is enough to miss the gpu-cache test so
+    // the next decode overwrites the slot through the upload path that already
+    // waits on the fence. The decoded and "missing artwork" lists go too: a
+    // SteamGridDB download is exactly what turns one of the latter into art.
+    for (auto& set : m_sets)
+        set.titleId = 0;
+    m_decodedCache.clear();
+    m_missingArtworkTitleIds.clear();
+}
+
 bool SteamGridDbBackdrop::hasGpuArtwork(std::uint64_t titleId) const {
     return std::any_of(m_sets.begin(), m_sets.end(), [titleId](const ArtworkSet& set) {
         return set.titleId == titleId && (set.hasHero || set.hasLogo);
@@ -52,7 +65,9 @@ void SteamGridDbBackdrop::setPreloadTitles(std::vector<std::uint64_t> titleIds) 
 }
 
 void SteamGridDbBackdrop::showTitle(std::uint64_t titleId, bool forceReload) {
-    if (!m_enabled) return;
+    // Clearing (titleId == 0) must run even when disabled so folder close /
+    // view toggles never leave a stale hero on screen.
+    if (!m_enabled && titleId != 0) return;
     if (!forceReload && m_requestedTitleId == titleId) return;
 
     // A direct artwork-to-artwork change may crossfade from the current set.
@@ -71,7 +86,19 @@ void SteamGridDbBackdrop::showTitle(std::uint64_t titleId, bool forceReload) {
         m_requestedTitleId = 0;
         ++m_requestGeneration;
         m_appliedGeneration = m_requestGeneration;
-        m_artworkOpacity.set(0.f, 0.22f, nxui::Easing::outCubic);
+        m_showPreviousDuringCrossfade = false;
+        if (forceReload) {
+            // Instant wipe (folder close) — no fade of the previous hero.
+            for (auto& set : m_sets) {
+                set.titleId = 0;
+                set.hasHero = false;
+                set.hasLogo = false;
+            }
+            m_artworkOpacity.setImmediate(0.f);
+            m_fade.setImmediate(1.f);
+        } else {
+            m_artworkOpacity.set(0.f, 0.22f, nxui::Easing::outCubic);
+        }
         DebugLog::log("[steamgriddb-ui] artwork cleared: selection has no title");
         return;
     }
@@ -111,6 +138,7 @@ void SteamGridDbBackdrop::showTitle(std::uint64_t titleId, bool forceReload) {
         m_requestedTitleId = titleId;
         ++m_requestGeneration;
         m_appliedGeneration = m_requestGeneration;
+        m_showPreviousDuringCrossfade = false;
         m_artworkOpacity.set(0.f, 0.22f, nxui::Easing::outCubic);
         DebugLog::log("[steamgriddb-ui] artwork cleared: title=%016llX has no assets",
                       static_cast<unsigned long long>(titleId));
@@ -134,6 +162,7 @@ void SteamGridDbBackdrop::showTitle(std::uint64_t titleId, bool forceReload) {
             if (m_missingArtworkTitleIds.size() > kMissingCacheLimit)
                 m_missingArtworkTitleIds.erase(m_missingArtworkTitleIds.begin());
         }
+        m_showPreviousDuringCrossfade = false;
         m_artworkOpacity.set(0.f, 0.22f, nxui::Easing::outCubic);
         DebugLog::log("[steamgriddb-ui] artwork fading out: title=%016llX has no files",
                       static_cast<unsigned long long>(titleId));
@@ -286,9 +315,9 @@ void SteamGridDbBackdrop::drawSet(nxui::Renderer& renderer,
 
     if (set.hasLogo && set.logo.valid()) {
         // Visually center the logo in the open space between the profile strip
-        // and the single-row carousel.
-        const nxui::Rect logoArea{370.f, 149.f, 540.f, 150.f};
-        renderer.drawTexture(&set.logo, containRect(set.logo, logoArea),
+        // and the single-row carousel (the app raises this area inside a
+        // folder so the logo never hides behind the folder title bubble).
+        renderer.drawTexture(&set.logo, containRect(set.logo, m_logoArea),
                              nxui::Color::white().withAlpha(0.96f * alpha));
     }
 }

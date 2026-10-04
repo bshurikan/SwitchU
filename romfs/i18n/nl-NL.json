@@ -53,9 +53,6 @@
       "region_south_korea": "Zuid-Korea",
       "auto_update": "Automatische update",
       "error_reporting": "Foutmelding",
-      "default_profile": "Default Profile",
-      "default_profile_desc": "Launch games with this profile when possible.",
-      "default_profile_ask": "Ask each time",
       "clock_12h": "12-uursklok",
       "clock_12h_desc": "Toon de tijd in 12-uursformaat."
     },
@@ -94,6 +91,10 @@
       "cursor_motion_desc": "Kies of de selectiecursor vloeiend of direct verplaatst.",
       "cursor_translate": "Vloeiend",
       "cursor_teleport": "Direct",
+      "page_transition": "Paginaovergang",
+      "page_transition_desc": "Kies of het wisselen van pagina de raster vloeiend verschuift of direct wisselt.",
+      "page_translate": "Vloeiend",
+      "page_teleport": "Direct",
       "ui_wireframe": "UI-draadmodel",
       "ui_wireframe_desc": "Toont contouren van alle Box-widgets voor lay-outdebugging."
     },

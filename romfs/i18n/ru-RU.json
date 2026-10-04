@@ -53,9 +53,6 @@
       "region_south_korea": "Южная Корея",
       "auto_update": "Автообновление",
       "error_reporting": "Отправка ошибок",
-      "default_profile": "Default Profile",
-      "default_profile_desc": "Launch games with this profile when possible.",
-      "default_profile_ask": "Ask each time",
       "clock_12h": "12-часовой формат",
       "clock_12h_desc": "Показывать время в 12-часовом формате."
     },
@@ -94,6 +91,10 @@
       "cursor_motion_desc": "Выберите плавное или мгновенное перемещение курсора выбора.",
       "cursor_translate": "Плавно",
       "cursor_teleport": "Мгновенно",
+      "page_transition": "Переход страницы",
+      "page_transition_desc": "Выберите, плавно прокручивать сетку при смене страницы или менять её мгновенно.",
+      "page_translate": "Плавно",
+      "page_teleport": "Мгновенно",
       "ui_wireframe": "Каркас интерфейса",
       "ui_wireframe_desc": "Показывает контуры всех Box для отладки макета."
     },
