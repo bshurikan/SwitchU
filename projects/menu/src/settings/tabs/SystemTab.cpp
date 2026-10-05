@@ -137,7 +137,7 @@ SettingsScreen::Tab settings::tabs::SystemTab::build(SettingsScreen& screen) {
         it.label = i18n.tr("settings.system.internet_time", "Synchronize Clock via Internet");
         it.description = i18n.tr(
             "settings.system.internet_time_desc",
-            "Automatically correct the console clock using network time.");
+            "Automatically correct the console clock using Nintendo network time. Needs Nintendo servers (often blocked by custom DNS).");
         it.type = ItemType::Toggle;
         it.boolVal = R_SUCCEEDED(stateResult) ? automatic : false;
         it.anim01 = it.boolVal ? 1.f : 0.f;
@@ -159,6 +159,20 @@ SettingsScreen::Tab settings::tabs::SystemTab::build(SettingsScreen& screen) {
                     "settings.system.time_change_failed",
                     "The date and time setting could not be changed."));
             }
+        };
+        t.items.push_back(std::move(it));
+    }
+
+    {
+        SettingItem it;
+        it.label = i18n.tr("settings.system.web_time", "Sync Clock from Web");
+        it.description = i18n.tr(
+            "settings.system.web_time_desc",
+            "Set the clock using public HTTPS time (works when Nintendo servers are blocked). Turns off Nintendo auto-sync.");
+        it.type = ItemType::Action;
+        it.buttonLabel = i18n.tr("settings.system.web_time_button", "Sync now");
+        it.onChange = [&screen](SettingItem&) {
+            screen.startWebClockSync();
         };
         t.items.push_back(std::move(it));
     }
