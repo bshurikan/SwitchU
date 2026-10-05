@@ -362,6 +362,22 @@ bool isInitialized() {
     return runtimeInitializedLocked();
 }
 
+bool isInternetReadyForHttp() {
+    std::lock_guard<std::mutex> lk(g_themeHttpMutex);
+    if (!initializeRuntimeLocked())
+        return false;
+
+    NifmInternetConnectionStatus status = NifmInternetConnectionStatus_ConnectingUnknown1;
+    u32 strength = 0;
+    const Result rc = nifmGetInternetConnectionStatus(nullptr, &strength, &status);
+    if (R_FAILED(rc)) {
+        DebugLog::log("[themeshop] isInternetReady nifm status rc=%s",
+                      resultToString(rc).c_str());
+        return false;
+    }
+    return status == NifmInternetConnectionStatus_Connected;
+}
+
 std::vector<std::uint8_t> getBytes(const std::string& url,
                                    const std::list<std::string>& headers,
                                    const ProgressCallback& onProgress,

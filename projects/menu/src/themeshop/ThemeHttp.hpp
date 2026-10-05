@@ -16,6 +16,8 @@ using AbortCheck = std::function<bool()>;
 bool initialize();
 void shutdown();
 bool isInitialized();
+/// True when NIFM reports an active internet connection (initializes HTTP runtime if needed).
+bool isInternetReadyForHttp();
 
 std::vector<std::uint8_t> getBytes(const std::string& url,
                                    const std::list<std::string>& headers = {},
