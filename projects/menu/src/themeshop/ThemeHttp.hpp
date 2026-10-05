@@ -26,4 +26,9 @@ std::string getText(const std::string& url,
                     const std::list<std::string>& headers = {},
                     const AbortCheck& shouldAbort = {});
 
+/// Fetch current UTC unix time from public HTTPS Date headers.
+/// Uses relaxed TLS verification so a badly wrong console clock can still
+/// bootstrap (Nintendo auto-sync is blocked under common DNS filters).
+std::uint64_t fetchUtcUnixTime(const AbortCheck& shouldAbort = {});
+
 } // namespace themeshop::http

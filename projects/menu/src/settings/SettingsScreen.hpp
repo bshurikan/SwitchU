@@ -1,6 +1,7 @@
 #pragma once
 
 #include "TabbedOverlayScreen.hpp"
+#include <cstdint>
 #include <future>
 
 namespace settings::tabs {
@@ -163,9 +164,18 @@ private:
     std::vector<std::future<Tab>> m_tabTasks;
     int m_nextPrefetchTab = 0;
 
+    struct ClockSyncFetch {
+        bool ok = false;
+        std::uint64_t posixUtc = 0;
+        std::string error;
+    };
+    std::future<ClockSyncFetch> m_clockSyncFuture;
+
     Tab buildTabNow(int tabIndex);
     Tab makeLoadingTab(int tabIndex) const;
     void startAsyncTabLoad(int tabIndex);
     void pollTabLoaders();
+    void pollClockSync();
     void prefetchOneTab();
+    void startWebClockSync();
 };
