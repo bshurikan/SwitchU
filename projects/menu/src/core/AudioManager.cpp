@@ -3,8 +3,10 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <random>
+#include <system_error>
 
 namespace {
 
@@ -558,14 +560,27 @@ void AudioManager::playCurrentInternal(bool fromStart) {
     if (m_tracks.empty() || m_current < 0 ||
         m_current >= static_cast<int>(m_tracks.size()))
         return;
+    if (!currentTrackFileExistsUnlocked()) {
+        std::fprintf(stderr,
+                     "[Audio] Resume skipped: track file missing (%s)\n",
+                     m_trackInfos[static_cast<size_t>(m_current)].path.c_str());
+        m_playing.store(false);
+        m_paused = true;
+        m_deferredSeekSeconds = -1.f;
+        return;
+    }
     s_instance.store(this);
     Mix_HookMusicFinished(onTrackFinished);
     m_suppressFinishedHook = true;
     Mix_PlayMusic(m_tracks[static_cast<size_t>(m_current)], 1);
-    if (!fromStart && m_positionSeconds > 0.25f)
-        Mix_SetMusicPosition(static_cast<double>(m_positionSeconds));
-    else
+    if (!fromStart) {
+        const float seekTo = sanitizeSeekSecondsUnlocked(m_positionSeconds);
+        m_positionSeconds = seekTo;
+        if (seekTo > 0.25f)
+            Mix_SetMusicPosition(static_cast<double>(seekTo));
+    } else {
         m_positionSeconds = 0.f;
+    }
     m_suppressFinishedHook = false;
     m_playing.store(true);
     m_paused = false;
@@ -725,13 +740,13 @@ void AudioManager::setPositionSeconds(float seconds) {
 
 void AudioManager::seekTo(float seconds) {
     std::lock_guard<std::mutex> lk(m_trackMutex);
-    const float dur = durationSeconds();
-    float target = std::max(0.f, seconds);
-    if (dur > 0.f)
-        target = std::min(target, std::max(0.f, dur - 0.05f));
+    const float target = sanitizeSeekSecondsUnlocked(seconds);
     m_positionSeconds = target;
     if (m_playing.load()) {
-        Mix_SetMusicPosition(static_cast<double>(m_positionSeconds));
+        if (target > 0.25f)
+            Mix_SetMusicPosition(static_cast<double>(m_positionSeconds));
+        else
+            playCurrentInternal(true);
     } else if (m_paused && !m_tracks.empty()) {
         // Keep paused but remember seek point for next play().
     }
@@ -744,19 +759,53 @@ const std::vector<uint8_t>& AudioManager::currentCoverArt() const {
     return m_trackInfos[static_cast<size_t>(m_current)].coverArt;
 }
 
-void AudioManager::restorePlaybackState(int trackIndex, float positionSeconds, bool playing) {
+void AudioManager::restorePlaybackState(int trackIndex,
+                                        float positionSeconds,
+                                        bool playing,
+                                        const std::string& trackKey) {
     std::lock_guard<std::mutex> lk(m_trackMutex);
     if (m_tracks.empty()) return;
-    m_current = std::clamp(trackIndex, 0, static_cast<int>(m_tracks.size()) - 1);
-    m_positionSeconds = std::max(0.f, positionSeconds);
+
+    int resolved = findTrackIndexByKeyUnlocked(trackKey);
+    bool dropSeek = false;
+    if (resolved >= 0) {
+        // Stable key matched — resume position is meaningful for this file.
+    } else if (!trackKey.empty()) {
+        // User deleted/renamed the saved track. Do not fall back to a stale
+        // index + seek into whatever now sits at that slot.
+        std::fprintf(stderr,
+                     "[Audio] Saved track key missing (%s); starting at first remaining track\n",
+                     trackKey.c_str());
+        resolved = 0;
+        dropSeek = true;
+    } else {
+        // Legacy configs only store an index. After add/remove that index often
+        // points at a different file — never Mix_SetMusicPosition without a key.
+        if (trackIndex >= 0 && trackIndex < static_cast<int>(m_tracks.size()))
+            resolved = trackIndex;
+        else
+            resolved = 0;
+        dropSeek = true;
+    }
+
+    m_current = resolved;
+    const float safeSeek = dropSeek ? 0.f : sanitizeSeekSecondsUnlocked(positionSeconds);
+    if (!dropSeek && safeSeek + 0.01f < std::max(0.f, positionSeconds)
+        && positionSeconds > 0.25f) {
+        std::fprintf(stderr,
+                     "[Audio] Clamped/dropped unsafe resume seek %.2fs (duration=%.2fs)\n",
+                     positionSeconds,
+                     durationSeconds());
+    }
+    m_positionSeconds = safeSeek;
     m_deferredSeekSeconds = -1.f;
     m_restoreFadeIn = false;
     if (playing) {
         // Stay silent only until the deferred seek lands, then snap to full volume.
         m_musicFade = 0.f;
         applyMusicVolume();
-        if (m_positionSeconds > 0.25f)
-            m_deferredSeekSeconds = m_positionSeconds;
+        if (safeSeek > 0.25f)
+            m_deferredSeekSeconds = safeSeek;
         else {
             m_musicFade = 1.f;
             applyMusicVolume();
@@ -779,9 +828,15 @@ void AudioManager::updateDeferredSeek() {
         std::lock_guard<std::mutex> lk(m_trackMutex);
         if (m_deferredSeekSeconds < 0.f || !m_playing.load())
             return;
-        seekTo = m_deferredSeekSeconds;
+        seekTo = sanitizeSeekSecondsUnlocked(m_deferredSeekSeconds);
         m_deferredSeekSeconds = -1.f;
         m_positionSeconds = seekTo;
+        if (seekTo <= 0.25f) {
+            m_musicFade = 1.f;
+            m_restoreFadeIn = false;
+            applyMusicVolume();
+            return;
+        }
     }
     Mix_SetMusicPosition(static_cast<double>(seekTo));
     {
@@ -790,6 +845,149 @@ void AudioManager::updateDeferredSeek() {
         m_restoreFadeIn = false;
         applyMusicVolume();
     }
+}
+
+std::string AudioManager::currentTrackKey() const {
+    if (m_current < 0 || m_current >= static_cast<int>(m_trackInfos.size()))
+        return {};
+    const auto& info = m_trackInfos[static_cast<size_t>(m_current)];
+    return info.relativeKey.empty() ? info.filename : info.relativeKey;
+}
+
+bool AudioManager::reconcileResumeConfig(int& trackIndex,
+                                         float& positionSeconds,
+                                         std::string& trackKey,
+                                         std::vector<std::string>& playlistOrder) const {
+    bool changed = false;
+    bool playlistChurn = false;
+
+    if (!playlistOrder.empty()) {
+        std::vector<std::string> kept;
+        kept.reserve(playlistOrder.size());
+        for (const auto& key : playlistOrder) {
+            if (findTrackIndexByKeyUnlocked(key) >= 0)
+                kept.push_back(key);
+            else {
+                playlistChurn = true;
+                changed = true;
+            }
+        }
+        // Append any newly added tracks that were not in the saved order.
+        for (const auto& info : m_trackInfos) {
+            const std::string& key = info.relativeKey.empty() ? info.filename : info.relativeKey;
+            if (std::find(kept.begin(), kept.end(), key) == kept.end()) {
+                kept.push_back(key);
+                playlistChurn = true;
+                changed = true;
+            }
+        }
+        if (kept != playlistOrder) {
+            playlistOrder = std::move(kept);
+            changed = true;
+        }
+    }
+
+    int resolved = findTrackIndexByKeyUnlocked(trackKey);
+    if (!trackKey.empty() && resolved < 0) {
+        trackKey.clear();
+        trackIndex = 0;
+        positionSeconds = 0.f;
+        if (!m_trackInfos.empty()) {
+            trackKey = m_trackInfos[0].relativeKey.empty()
+                ? m_trackInfos[0].filename
+                : m_trackInfos[0].relativeKey;
+        }
+        changed = true;
+    } else if (resolved >= 0) {
+        if (trackIndex != resolved) {
+            trackIndex = resolved;
+            changed = true;
+        }
+        const std::string& canonical =
+            m_trackInfos[static_cast<size_t>(resolved)].relativeKey.empty()
+                ? m_trackInfos[static_cast<size_t>(resolved)].filename
+                : m_trackInfos[static_cast<size_t>(resolved)].relativeKey;
+        if (trackKey != canonical) {
+            trackKey = canonical;
+            changed = true;
+        }
+        const float safe = sanitizeSeekSecondsForDuration(
+            positionSeconds,
+            m_trackInfos[static_cast<size_t>(resolved)].durationSeconds);
+        if (safe + 0.01f < positionSeconds || safe > positionSeconds + 0.01f) {
+            positionSeconds = safe;
+            changed = true;
+        }
+    } else if (m_trackInfos.empty()) {
+        if (trackIndex != 0 || positionSeconds != 0.f || !trackKey.empty()) {
+            trackIndex = 0;
+            positionSeconds = 0.f;
+            trackKey.clear();
+            changed = true;
+        }
+    } else {
+        // Legacy (no musicTrackKey yet), or playlist files changed under us.
+        if (playlistChurn
+            || trackIndex < 0
+            || trackIndex >= static_cast<int>(m_trackInfos.size())) {
+            trackIndex = 0;
+            positionSeconds = 0.f;
+            changed = true;
+        } else if (positionSeconds > 0.25f) {
+            // Index-only resume cannot safely seek after users edit music files.
+            positionSeconds = 0.f;
+            changed = true;
+        }
+        const auto& info = m_trackInfos[static_cast<size_t>(trackIndex)];
+        const std::string canonical =
+            info.relativeKey.empty() ? info.filename : info.relativeKey;
+        if (trackKey != canonical) {
+            trackKey = canonical;
+            changed = true;
+        }
+    }
+
+    return changed;
+}
+
+int AudioManager::findTrackIndexByKeyUnlocked(const std::string& trackKey) const {
+    if (trackKey.empty())
+        return -1;
+    for (size_t i = 0; i < m_trackInfos.size(); ++i) {
+        if (m_trackInfos[i].relativeKey == trackKey)
+            return static_cast<int>(i);
+    }
+    for (size_t i = 0; i < m_trackInfos.size(); ++i) {
+        if (m_trackInfos[i].filename == trackKey)
+            return static_cast<int>(i);
+    }
+    return -1;
+}
+
+float AudioManager::sanitizeSeekSecondsForDuration(float positionSeconds,
+                                                   float durationSeconds) const {
+    // NaN / negative → no seek.
+    if (!(positionSeconds > 0.25f))
+        return 0.f;
+    // Unknown duration: seeking into an arbitrary MP3 has hung SDL_mixer on
+    // Switch after playlist churn. Prefer start-of-track over a speculative seek.
+    if (!(durationSeconds > 1.f))
+        return 0.f;
+    if (positionSeconds >= durationSeconds - 0.05f)
+        return 0.f;
+    return positionSeconds;
+}
+
+float AudioManager::sanitizeSeekSecondsUnlocked(float positionSeconds) const {
+    return sanitizeSeekSecondsForDuration(positionSeconds, durationSeconds());
+}
+
+bool AudioManager::currentTrackFileExistsUnlocked() const {
+    if (m_current < 0 || m_current >= static_cast<int>(m_trackInfos.size()))
+        return false;
+    std::error_code ec;
+    return std::filesystem::is_regular_file(
+        m_trackInfos[static_cast<size_t>(m_current)].path, ec);
 }
 
 void AudioManager::loadSfx(Sfx id, const std::string& path) {

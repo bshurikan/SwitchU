@@ -98,9 +98,25 @@ public:
     void seekTo(float seconds);
     const std::vector<uint8_t>& currentCoverArt() const;
 
-    void restorePlaybackState(int trackIndex, float positionSeconds, bool playing);
+    /// Resume by stable track key when possible. If the saved track is gone
+    /// (user deleted/renamed files), starts from the first remaining track at 0
+    /// instead of seeking into a different file at the old index/position —
+    /// Mix_SetMusicPosition into the wrong MP3 can hang SDL_mixer on Switch.
+    void restorePlaybackState(int trackIndex,
+                              float positionSeconds,
+                              bool playing,
+                              const std::string& trackKey = {});
     /// Apply a deferred Mix_SetMusicPosition after HOME is interactive.
     void updateDeferredSeek();
+
+    /// Current track's playlist key, or empty if none.
+    std::string currentTrackKey() const;
+    /// Drop stale playlist keys and rewrite index/key/position when the saved
+    /// resume target is no longer on disk. Returns true if config fields changed.
+    bool reconcileResumeConfig(int& trackIndex,
+                               float& positionSeconds,
+                               std::string& trackKey,
+                               std::vector<std::string>& playlistOrder) const;
 
     void loadSfx(Sfx id, const std::string& path);
     void clearSfx();
@@ -119,6 +135,10 @@ private:
     void rebuildShuffleOrder(bool keepCurrent);
     int nextIndexInOrder(int from) const;
     int prevIndexInOrder(int from) const;
+    int findTrackIndexByKeyUnlocked(const std::string& trackKey) const;
+    float sanitizeSeekSecondsForDuration(float positionSeconds, float durationSeconds) const;
+    float sanitizeSeekSecondsUnlocked(float positionSeconds) const;
+    bool currentTrackFileExistsUnlocked() const;
     static std::string cleanedFilenameTitle(const std::string& filename);
     static void readMp3Metadata(const std::string& path, MusicTrackInfo& info);
 
