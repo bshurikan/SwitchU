@@ -34,6 +34,8 @@ struct AppConfig {
     bool  clockUse12Hour = false;
     // Show the lock screen when the console wakes from sleep.
     bool  lockScreenEnabled = true;
+    // Alternate to Nintendo auto clock correction: HTTPS Date sync on boot.
+    bool  webClockSyncEnabled = false;
     bool  accessibilityEnabled = true;
     bool  accessibilitySpeakHints = true;
     bool  accessibilitySpeakContextEveryFocus = false;

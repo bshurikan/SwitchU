@@ -86,6 +86,7 @@ bool AppConfig::load() {
     readJsonOpt(j, "tutorialCompleted", tutorialCompleted);
     readJsonOpt(j, "clockUse12Hour", clockUse12Hour);
     readJsonOpt(j, "lockScreenEnabled", lockScreenEnabled);
+    readJsonOpt(j, "webClockSyncEnabled", webClockSyncEnabled);
     readJsonOpt(j, "accessibilityEnabled", accessibilityEnabled);
     readJsonOpt(j, "accessibilitySpeakHints", accessibilitySpeakHints);
     readJsonOpt(j, "accessibilitySpeakContextEveryFocus", accessibilitySpeakContextEveryFocus);
@@ -209,6 +210,7 @@ bool AppConfig::save() const {
     j["tutorialCompleted"] = tutorialCompleted;
     j["clockUse12Hour"] = clockUse12Hour;
     j["lockScreenEnabled"] = lockScreenEnabled;
+    j["webClockSyncEnabled"] = webClockSyncEnabled;
     j["accessibilityEnabled"] = accessibilityEnabled;
     j["accessibilitySpeakHints"] = accessibilitySpeakHints;
     j["accessibilitySpeakContextEveryFocus"] = accessibilitySpeakContextEveryFocus;
