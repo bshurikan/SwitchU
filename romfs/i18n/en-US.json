@@ -344,7 +344,10 @@
       "download_title": "Downloading artwork",
       "download_start": "Searching SteamGridDB...",
       "cancelling": "Cancelling...",
-      "scan_cancelled": "Artwork scan cancelled."
+      "scan_cancelled": "Artwork scan cancelled.",
+      "https_clock_hint": "HTTPS failed. If the console clock is wrong, fix it in Settings > System - try Synchronize Clock via Public Servers.",
+      "search_failed": "Search failed. If HTTPS keeps failing, check the console clock in Settings > System.",
+      "https_clock_title": "Couldn't reach SteamGridDB"
     },
     "controllers": {
       "test": "Test Input Devices",

@@ -330,7 +330,10 @@
       "start_failed": "La recherche des visuels n'a pas pu démarrer.",
       "started": "Recherche SteamGridDB démarrée.",
       "download_title": "Téléchargement des visuels",
-      "download_start": "Recherche sur SteamGridDB..."
+      "download_start": "Recherche sur SteamGridDB...",
+      "https_clock_hint": "Echec HTTPS. Si l'horloge de la console est incorrecte, corrigez-la dans Parametres > Systeme - essayez Synchroniser l'horloge via des serveurs publics.",
+      "search_failed": "Echec de la recherche. Si HTTPS echoue encore, verifiez l'horloge dans Parametres > Systeme.",
+      "https_clock_title": "Impossible d'atteindre SteamGridDB"
     },
     "controllers": {
       "test": "Tester les périphériques",
