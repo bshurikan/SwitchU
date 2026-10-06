@@ -4,6 +4,7 @@
 
 #include <curl/curl.h>
 #include <curlpp/Easy.hpp>
+#include <curlpp/Exception.hpp>
 #include <curlpp/Infos.hpp>
 #include <curlpp/Options.hpp>
 #include <curlpp/cURLpp.hpp>
@@ -149,10 +150,30 @@ std::vector<std::uint8_t> performRequestBytes(const std::string& url,
     configureRequest(request, url, response, headers, onProgress, shouldAbort);
     try {
         request.perform();
+    } catch (const curlpp::LibcurlRuntimeError& ex) {
+        if (isAbortRequested(shouldAbort))
+            throw std::runtime_error("Cancelled");
+        const char* detail = ex.what();
+        std::string msg = "HTTPS failed";
+        if (detail && detail[0] != '\0') {
+            msg += ": ";
+            msg += detail;
+        } else {
+            msg += ": ";
+            msg += curl_easy_strerror(ex.whatCode());
+        }
+        throw std::runtime_error(msg);
+    } catch (const std::exception& ex) {
+        if (isAbortRequested(shouldAbort))
+            throw std::runtime_error("Cancelled");
+        const char* detail = ex.what();
+        if (detail && detail[0] != '\0')
+            throw std::runtime_error(detail);
+        throw std::runtime_error("HTTPS request failed");
     } catch (...) {
         if (isAbortRequested(shouldAbort))
             throw std::runtime_error("Cancelled");
-        throw;
+        throw std::runtime_error("HTTPS request failed");
     }
 
     if (isAbortRequested(shouldAbort))
@@ -193,14 +214,16 @@ std::vector<std::uint8_t> performBytes(const std::string& url,
             }
             return bytes;
         } catch (const std::exception& ex) {
-            lastError = ex.what();
+            lastError = ex.what() ? ex.what() : "";
+            if (lastError.empty())
+                lastError = "HTTPS request failed";
             if (lastError == "Cancelled" || isAbortRequested(shouldAbort))
                 throw std::runtime_error("Cancelled");
             DebugLog::log("[themeshop] request failed (%d/%d): %s -> %s",
                           attempt,
                           kRequestAttemptCount,
                           url.c_str(),
-                          ex.what());
+                          lastError.c_str());
         } catch (...) {
             if (isAbortRequested(shouldAbort))
                 throw std::runtime_error("Cancelled");
