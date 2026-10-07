@@ -92,6 +92,9 @@ public:
         std::function<std::vector<uint8_t>()> onMusicQueryCoverArt;
         std::function<const std::vector<uint8_t>*(int)> onMusicQueryTrackCover;
         std::function<const std::vector<uint8_t>*(const std::string&)> onMusicQueryFolderCover;
+        /// Draw the live HOME theme background (WaraWara / image) into the
+        /// fullscreen cover player letterbox. Alpha is the overlay fade.
+        std::function<void(nxui::Renderer&, float)> onRenderMenuBackground;
     };
 
     QuickSettingsOverlay();

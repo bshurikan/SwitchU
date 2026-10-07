@@ -3320,7 +3320,19 @@ void WiiUMenuApp::openCapturedFolder() {
         appear.fromTile  = true;
         appear.origin    = m_folderZoomOriginRect;
     }
-    applyDisplayModel(buildOpenFolderModel(m_openFolderId), m_folderOpenFocusTitleId,
+    // FocusManager::setGrid preserves the previous row/col, so opening a folder
+    // without an explicit title would land on whatever cell matched the folder
+    // tile's home placement. Default to the first title (top-left reading order).
+    std::uint64_t openFocus = m_folderOpenFocusTitleId;
+    if (openFocus == 0) {
+        for (std::uint64_t titleId : folder->titleIds) {
+            if (titleId != 0) {
+                openFocus = titleId;
+                break;
+            }
+        }
+    }
+    applyDisplayModel(buildOpenFolderModel(m_openFolderId), openFocus,
                       zoom, appear, true);
     m_folderOpenFocusTitleId = 0;
     // Single-row mode scrolls by index instead of paging, so a freshly opened
@@ -4669,7 +4681,9 @@ void WiiUMenuApp::persistMusicPlaybackState(bool updateEnabledFlag) {
 void WiiUMenuApp::resumeMenuMusicAfterReturn() {
     m_audio.setMusicFade(1.f);
     m_musicFadeActive = false;
-    if (m_config.musicEnabled && m_audio.trackCount() > 0)
+    // Already-playing BGM must not Mix_PlayMusic again — that restarts the
+    // decoder and sounds like a skip when HOME only dismisses an overlay.
+    if (m_config.musicEnabled && m_audio.trackCount() > 0 && !m_audio.isPlaying())
         m_audio.play();
 }
 
