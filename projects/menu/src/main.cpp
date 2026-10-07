@@ -159,56 +159,45 @@ extern "C" void __appInit(void) {
     else
         DebugLog::log("[menu] nsInitialize OK");
 
-    // Probe VI/layer creation with retries before libnx's fatal BadGfxInit path.
-    // HOME-from-app can briefly leave the compositor unable to create Album's layer;
-    // aborting there also took down vi/omm. Prefer a clean exit so the daemon can relaunch.
+    // Single VI/layer probe before libnx's fatal BadGfxInit path.
+    // Retrying viInitialize after a failure (e.g. 0xF601) was observed to panic VI
+    // itself. Prefer an immediate clean exit so the daemon can settle and relaunch.
     {
-        constexpr int kGfxProbeAttempts = 8;
-        bool gfxReady = false;
-        Result lastRc = 0;
-        for (int attempt = 0; attempt < kGfxProbeAttempts; ++attempt) {
-            lastRc = viInitialize(ViServiceType_Default);
-            if (R_FAILED(lastRc)) {
-                DebugLog::log("[menu] gfx probe viInitialize fail attempt=%d rc=0x%X",
-                              attempt, lastRc);
-                svcSleepThread(100'000'000ULL);
-                continue;
-            }
-
-            ViDisplay display{};
-            ViLayer layer{};
-            bool haveDisplay = false;
-            bool haveLayer = false;
-            lastRc = viOpenDefaultDisplay(&display);
-            if (R_SUCCEEDED(lastRc)) {
-                haveDisplay = true;
-                lastRc = viCreateLayer(&display, &layer);
-                if (R_SUCCEEDED(lastRc)) {
-                    haveLayer = true;
-                    gfxReady = true;
-                }
-            }
-
-            if (haveLayer)
-                viCloseLayer(&layer);
-            if (haveDisplay)
-                viCloseDisplay(&display);
-            viExit();
-
-            if (gfxReady) {
-                if (attempt > 0)
-                    DebugLog::log("[menu] gfx probe ok on attempt=%d", attempt);
-                break;
-            }
-
-            DebugLog::log("[menu] gfx probe fail attempt=%d rc=0x%X", attempt, lastRc);
-            svcSleepThread(100'000'000ULL);
+        Result lastRc = viInitialize(ViServiceType_Default);
+        if (R_FAILED(lastRc)) {
+            DebugLog::log(
+                "[menu] gfx probe viInitialize fail rc=0x%X; clean exit for daemon relaunch",
+                lastRc);
+            DebugLog::closeFileLog();
+            switchu::FileLog::close();
+            svcExitProcess();
         }
+
+        ViDisplay display{};
+        ViLayer layer{};
+        bool gfxReady = false;
+        bool haveDisplay = false;
+        bool haveLayer = false;
+        lastRc = viOpenDefaultDisplay(&display);
+        if (R_SUCCEEDED(lastRc)) {
+            haveDisplay = true;
+            lastRc = viCreateLayer(&display, &layer);
+            if (R_SUCCEEDED(lastRc)) {
+                haveLayer = true;
+                gfxReady = true;
+            }
+        }
+
+        if (haveLayer)
+            viCloseLayer(&layer);
+        if (haveDisplay)
+            viCloseDisplay(&display);
+        viExit();
 
         if (!gfxReady) {
             DebugLog::log(
-                "[menu] gfx not ready after %d probes (last rc=0x%X); clean exit for daemon relaunch",
-                kGfxProbeAttempts, lastRc);
+                "[menu] gfx probe layer fail rc=0x%X; clean exit for daemon relaunch",
+                lastRc);
             DebugLog::closeFileLog();
             switchu::FileLog::close();
             // Avoid LibnxError_BadGfxInit (and the vi/omm cascade it caused).

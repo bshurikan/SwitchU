@@ -214,9 +214,11 @@ static int  g_menuGfxRelaunchTries = 0;
 static int  g_menuGfxRelaunchDelay = 0;
 static bool g_menuGfxRelaunchPending = false;
 static constexpr int kMenuGfxRelaunchMaxTries = 3;
-static constexpr int kMenuGfxRelaunchDelayTicks = 30; // ~300ms at 10ms tick
+static constexpr int kMenuGfxRelaunchDelayTicks = 80; // ~800ms at 10ms tick
 static constexpr uint64_t kMenuEarlyExitNs = 2'500'000'000ULL;
 static constexpr uint64_t kHomeMenuSettleNs = 80'000'000ULL;
+// HOME-from-app needs a longer compositor settle; short settles still saw VI panic.
+static constexpr uint64_t kHomeMenuSettleWithAppNs = 600'000'000ULL;
 static s32      g_lastRecordCount = 0;
 static uint64_t g_lastRecordTids[1024] = {};
 static uint32_t g_lastViewFlags[1024]  = {};
@@ -862,8 +864,15 @@ static Result launchPendingHomeMenu() {
         "[%s] HOME foreground acquired; launching MainMenu status.running=%d suspended=0x%016lX",
         source, status.app_running ? 1 : 0, status.suspended_app_id);
     // Give VI a beat after the app loses foreground before Album creates a layer.
-    // A rare BadGfxInit race was observed when HOME relaunched the menu immediately.
-    svcSleepThread(kHomeMenuSettleNs);
+    // HOME-from-suspended-app needs longer; short settles still raced into VI panic.
+    const uint64_t settleNs =
+        (status.suspended_app_id != 0 || status.app_running)
+            ? kHomeMenuSettleWithAppNs
+            : kHomeMenuSettleNs;
+    switchu::FileLog::log("[%s] HOME menu settle %lums",
+                          source,
+                          static_cast<unsigned long>(settleNs / 1'000'000ULL));
+    svcSleepThread(settleNs);
     g_menuReadyThisSession = false;
     const uint64_t launchStartedAt = armGetSystemTick();
     const Result rc = daemon::menu_la::launch(smi::MenuStartMode::MainMenu, status);
@@ -1869,9 +1878,14 @@ static void mainLoop() {
                               g_menuGfxRelaunchTries,
                               daemon::app::isRunning() ? 1 : 0);
         g_menuReadyThisSession = false;
-        svcSleepThread(kHomeMenuSettleNs);
+        const auto relaunchStatus = buildSystemStatus();
+        const uint64_t settleNs =
+            (relaunchStatus.suspended_app_id != 0 || relaunchStatus.app_running)
+                ? kHomeMenuSettleWithAppNs
+                : kHomeMenuSettleNs;
+        svcSleepThread(settleNs);
         const Result rc = daemon::menu_la::launch(smi::MenuStartMode::MainMenu,
-                                                  buildSystemStatus());
+                                                  relaunchStatus);
         switchu::FileLog::log("[main] gfx relaunch rc=0x%X", rc);
         if (R_FAILED(rc) && g_menuGfxRelaunchTries < kMenuGfxRelaunchMaxTries) {
             g_menuGfxRelaunchPending = true;
