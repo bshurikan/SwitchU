@@ -5125,6 +5125,18 @@ void WiiUMenuApp::onUpdateAwake(float dt) {
         step(m_arrowAnimLeft, paging && page > 0);
         step(m_arrowAnimRight, (paging && page < total - 1) || m_addPageMode);
 
+        {
+            const float d = dt / kPageArrowFade;
+            const bool showDelete = deletePageAvailable();
+            m_deletePageShow = std::clamp(
+                m_deletePageShow + (showDelete ? d : -d), 0.f, 1.f);
+            if (!showDelete) {
+                m_touchDeletePage = false;
+                m_deletePageHold = 0.f;
+                m_deletePagePlusArmed = false;
+            }
+        }
+
         if (m_addPageMode) {
             const bool holding = m_addPageTouchHold
                               || app().input().isHeld(nxui::Button::ZR);
@@ -5141,6 +5153,53 @@ void WiiUMenuApp::onUpdateAwake(float dt) {
         } else {
             m_addPageHold = 0.f;
             m_addPageTouchHold = false;
+        }
+
+        // Hold Plus (Start) on an empty page to open the delete-page menu —
+        // mirrors hold-ZR on the add-page control.
+        if (deletePageAvailable()) {
+            if (app().input().isDown(nxui::Button::Plus)
+                && !app().input().isDown(nxui::Button::Minus))
+                m_deletePagePlusArmed = true;
+            const bool holdingPlus = m_deletePagePlusArmed
+                && app().input().isHeld(nxui::Button::Plus)
+                && !app().input().isDown(nxui::Button::Minus);
+            if (holdingPlus) {
+                m_deletePageHold = std::min(1.f, m_deletePageHold + dt / kAddPageHoldDur);
+                if (m_deletePageHold >= 1.f) {
+                    m_deletePageHold = 0.f;
+                    m_deletePagePlusArmed = false;
+                    showDeletePageDialog();
+                }
+            } else {
+                if (m_deletePagePlusArmed && app().input().isUp(nxui::Button::Plus)
+                    && m_deletePageHold < 0.35f
+                    && m_openFolderId == 0) {
+                    // Short Plus tap still opens Add when HOME empty-page delete
+                    // is showing (hold was for delete).
+                    auto* current = focusManager().current();
+                    if (current && current->tag() == "glossy_icon" && m_grid) {
+                        auto* icon = static_cast<GlossyIcon*>(current);
+                        const auto& icons = m_grid->allIcons();
+                        const auto found = std::find_if(
+                            icons.begin(), icons.end(),
+                            [icon](const auto& c) { return c.get() == icon; });
+                        const int index = found == icons.end()
+                            ? -1 : static_cast<int>(std::distance(icons.begin(), found));
+                        if (index >= 0 && index < m_model.count()
+                            && (m_model.at(index).titleId == 0
+                                || m_model.at(index).kind == GridEntryKind::Empty))
+                            showAddContextMenu(index, icon->focusRect());
+                    }
+                }
+                m_deletePageHold = std::max(0.f,
+                    m_deletePageHold - dt / (kAddPageHoldDur * 0.4f));
+                if (!app().input().isHeld(nxui::Button::Plus))
+                    m_deletePagePlusArmed = false;
+            }
+        } else {
+            m_deletePageHold = 0.f;
+            m_deletePagePlusArmed = false;
         }
     }
 
@@ -5528,8 +5587,11 @@ void WiiUMenuApp::onUpdateAwake(float dt) {
     // the focused icon still being attached through every transient grid
     // rebuild, which could make Plus silently disappear after a page/model
     // update even though the icon remained visibly selected.
+    // When an empty-page delete control is up, Plus is armed for hold-to-delete
+    // (handled above). Skip the instant Plus menu so a hold is not also an Add.
     if (app().input().isDown(nxui::Button::Plus) &&
         !app().input().isDown(nxui::Button::Minus) &&
+        !deletePageAvailable() &&
         m_navigator.route() == switchu::navigation::Route::Home &&
         !m_editMode &&
         !(m_contextMenu && m_contextMenu->isActive()) &&
@@ -5943,12 +6005,16 @@ std::vector<WiiUMenuApp::ActionHint> WiiUMenuApp::buildActionHints() {
         } else if (m_openFolderId == 0 && deletePageAvailable()) {
 #ifdef SWITCHU_MENU
             add(buttonGlyph(nxui::Button::A), i18n.tr("page.delete", "Delete page"));
-            add(buttonGlyph(nxui::Button::Plus), i18n.tr("add.title", "Add"));
+            // Hold Plus mirrors hold-ZR on the add-page control.
+            add(buttonGlyph(nxui::Button::Plus),
+                i18n.tr("page.delete_hold", "Hold to delete"));
 #else
             add(buttonGlyph(nxui::Button::A), i18n.tr("page.delete", "Delete page"));
 #endif
         } else if (m_openFolderId != 0 && deletePageAvailable()) {
             add(buttonGlyph(nxui::Button::A), i18n.tr("page.delete", "Delete page"));
+            add(buttonGlyph(nxui::Button::Plus),
+                i18n.tr("page.delete_hold", "Hold to delete"));
         } else if (m_openFolderId == 0) {
 #ifdef SWITCHU_MENU
             add(buttonGlyph(nxui::Button::Plus), i18n.tr("add.title", "Add"));
@@ -6302,6 +6368,19 @@ bool WiiUMenuApp::deletePageAvailable() const {
     return m_grid->totalPages() > 1;
 }
 
+nxui::Rect WiiUMenuApp::deletePageButtonRect() const {
+    constexpr float kSize = 64.f;
+    if (!m_grid)
+        return {640.f - kSize * 0.5f, 360.f - kSize * 0.5f, kSize, kSize};
+    const nxui::Rect content = m_grid->contentRect();
+    return {
+        content.x + content.width * 0.5f - kSize * 0.5f,
+        content.y + content.height * 0.5f - kSize * 0.5f,
+        kSize,
+        kSize
+    };
+}
+
 void WiiUMenuApp::createPage() {
     if (!addPageAvailable() || !m_grid)
         return;
@@ -6318,6 +6397,11 @@ void WiiUMenuApp::createPage() {
             return;
         if (!m_folderStore.setPageCount(m_openFolderId, pages + 1))
             return;
+        // Keep titleIds padded to the declared page count so empty trailing
+        // pages are real slots (delete-all can see and remove them).
+        if (auto* folderMut = m_folderStore.find(m_openFolderId))
+            folderMut->titleIds.resize(
+                static_cast<std::size_t>((pages + 1) * perPage), 0);
         if (!saveFoldersOrReport("add_folder_page"))
             return;
 
@@ -6516,7 +6600,27 @@ void WiiUMenuApp::deleteAllUnusedPages() {
         auto* folder = m_folderStore.find(m_openFolderId);
         if (!folder)
             return;
-        const int pages = std::max(folder->pageCount, m_grid->totalPages());
+        // Uninstalled titles still occupy slots in folders.json, so the page
+        // looks empty in the UI while pageSlotsEmpty() saw it as occupied —
+        // "delete all unused" then no-op'd until a second try. Drop missing
+        // titles first so empty pages are actually empty.
+        bool purgedMissing = false;
+        for (auto& titleId : folder->titleIds) {
+            if (titleId == 0)
+                continue;
+            const bool known = std::any_of(
+                m_allApps.begin(), m_allApps.end(),
+                [titleId](const AppEntry& app) { return app.titleId == titleId; });
+            if (!known) {
+                titleId = 0;
+                purgedMissing = true;
+            }
+        }
+        const int pages = std::max({
+            folder->pageCount,
+            m_grid->totalPages(),
+            std::max(1, (static_cast<int>(folder->titleIds.size()) + perPage - 1) / perPage)
+        });
         folder->titleIds.resize(static_cast<std::size_t>(pages * perPage), 0);
 
         // Count how many empty pages before stayPage so focus can shift left.
@@ -6526,10 +6630,16 @@ void WiiUMenuApp::deleteAllUnusedPages() {
                 ++removedBefore;
         }
         const int removed = removeEmptySlotPages(folder->titleIds, perPage);
-        if (removed <= 0)
-            return;
-        folder->pageCount = std::max(1,
+        const int newPageCount = std::max(1,
             (static_cast<int>(folder->titleIds.size()) + perPage - 1) / perPage);
+        // pageCount alone can keep phantom empty pages alive even when titleIds
+        // was already compact — always sync it. Also persist purged missing
+        // titles even when no page was removed.
+        const bool changed = removed > 0 || purgedMissing
+            || folder->pageCount != newPageCount;
+        folder->pageCount = newPageCount;
+        if (!changed)
+            return;
         if (!saveFoldersOrReport("delete_unused_folder_pages"))
             return;
 
@@ -6662,6 +6772,66 @@ void WiiUMenuApp::renderPageArrows(nxui::Renderer& ren) {
               m_addPageMode);
 }
 
+void WiiUMenuApp::renderDeletePageButton(nxui::Renderer& ren) {
+    if (m_deletePageShow <= 0.002f)
+        return;
+    if ((m_dialog && m_dialog->isActive()) ||
+        (m_progressDialog && m_progressDialog->isActive()) ||
+        (m_contextMenu && m_contextMenu->isActive()) ||
+        (m_textEntry && m_textEntry->isActive()) ||
+        (m_userSelect && m_userSelect->isActive()) ||
+        (m_settings && m_settings->isActive()) ||
+        (m_themeShop && m_themeShop->isActive()) ||
+        (m_gameOptions && m_gameOptions->isActive()) ||
+        (m_folderOptions && m_folderOptions->isActive()) ||
+        (m_quickSettings && m_quickSettings->isActive()) ||
+        (m_steamGridDbPicker && m_steamGridDbPicker->isActive()) ||
+        (m_profileCarousel && m_profileCarousel->isActive()))
+        return;
+
+    const float e = m_deletePageShow * m_deletePageShow * (3.f - 2.f * m_deletePageShow);
+    const nxui::Rect base = deletePageButtonRect();
+    const float grow = 0.10f * m_deletePageHold;
+    const float scale = 1.f + grow;
+    const float cx = base.x + base.width * 0.5f;
+    const float cy = base.y + base.height * 0.5f;
+    const float ring = std::min(base.width, base.height) * 0.42f * scale;
+
+    ren.drawCircle({cx, cy + 2.f}, ring,
+                   nxui::Color(0.02f, 0.04f, 0.06f, 0.32f * e), 28);
+    ren.drawCircle({cx, cy}, ring,
+                   m_theme.panelBase.withAlpha(0.88f * e), 28);
+    ren.drawCircle({cx, cy}, ring - 1.6f,
+                   m_theme.panelHighlight.withAlpha(0.10f * e), 28);
+
+    const float bar = ring * 0.92f;
+    const float thick = std::max(2.f, ring * 0.17f);
+    const nxui::Color ink = m_theme.textPrimary.withAlpha(0.92f * e);
+    ren.drawRoundedRect({cx - bar * 0.5f, cy - thick * 0.5f, bar, thick},
+                        ink, thick * 0.5f);
+
+    if (m_deletePageHold > 0.002f) {
+        constexpr int kSegments = 44;
+        const float rr = ring + 3.5f;
+        const int lit = std::max(1, (int)std::ceil(kSegments * m_deletePageHold));
+        const nxui::Color arc = m_theme.cursorNormal.withAlpha(0.95f * e);
+        for (int i = 0; i < lit; ++i) {
+            const float a0 = -1.5707963f + 6.2831853f * (float)i / kSegments;
+            const float a1 = -1.5707963f + 6.2831853f * (float)(i + 1) / kSegments;
+            ren.drawLine({cx + std::cos(a0) * rr, cy + std::sin(a0) * rr},
+                         {cx + std::cos(a1) * rr, cy + std::sin(a1) * rr},
+                         arc, 3.f);
+        }
+    }
+
+    // Match the add-page control: button glyph sits under the circle.
+    constexpr float kGlyphScale = 0.70f;
+    const std::string glyph = buttonGlyph(nxui::Button::Plus);
+    const nxui::Vec2 gs = m_fontIcons.measure(glyph);
+    ren.drawText(glyph, {cx - gs.x * kGlyphScale * 0.5f, cy + ring + 6.f},
+                 &m_fontIcons, m_theme.textPrimary.withAlpha(0.9f * e), kGlyphScale);
+}
+
 void WiiUMenuApp::onRender(nxui::Renderer& ren) {
     if (m_folderCaptureRequested) {
         if (ren.gpu().offscreenReady()) {
@@ -6754,6 +6924,7 @@ void WiiUMenuApp::onRender(nxui::Renderer& ren) {
     }
 
     renderPageArrows(ren);
+    renderDeletePageButton(ren);
     if (m_config.actionHintStyle == "panel")
         renderActionHintPanel(ren);
     else

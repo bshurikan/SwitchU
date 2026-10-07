@@ -1722,6 +1722,7 @@ void WiiUMenuApp::handleTouch() {
         float ty = input.touchY();
 
         m_touchArrowLeft = m_touchArrowRight = false;
+        m_touchDeletePage = false;
         m_touchBattery = false;
         if (m_arrowAnimLeft.show > 0.5f && pageArrowRect(true).expanded(12.f).contains(tx, ty)) {
             m_touchArrowLeft = true;
@@ -1731,6 +1732,11 @@ void WiiUMenuApp::handleTouch() {
         if (m_arrowAnimRight.show > 0.5f && pageArrowRect(false).expanded(12.f).contains(tx, ty)) {
             m_touchArrowRight = true;
             m_addPageTouchHold = m_addPageMode;
+            m_touchHitIndex = -1;
+            return;
+        }
+        if (m_deletePageShow > 0.5f && deletePageButtonRect().expanded(10.f).contains(tx, ty)) {
+            m_touchDeletePage = true;
             m_touchHitIndex = -1;
             return;
         }
@@ -1813,6 +1819,14 @@ void WiiUMenuApp::handleTouch() {
     }
 
     if (input.touchUp()) {
+        if (m_touchDeletePage) {
+            m_touchDeletePage = false;
+            if (deletePageAvailable() &&
+                deletePageButtonRect().expanded(10.f).contains(input.touchX(), input.touchY()))
+                showDeletePageDialog();
+            return;
+        }
+
         if (m_touchBattery) {
             m_touchBattery = false;
             float dx = input.touchDeltaX();
