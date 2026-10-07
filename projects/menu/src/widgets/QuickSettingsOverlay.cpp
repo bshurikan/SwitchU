@@ -3102,6 +3102,11 @@ void QuickSettingsOverlay::render(nxui::Renderer& ren) {
                          nxui::Color(0.f, 0.f, 0.f, 0.72f * alpha));
         }
 
+        // Theme HOME background over the letterbox (blur shows through the
+        // bars; the sharp cover below covers the center).
+        if (m_callbacks.onRenderMenuBackground)
+            m_callbacks.onRenderMenuBackground(ren, alpha);
+
         // Sharp cover: fit to screen (square/portrait = side letterbox).
         {
             const float fitScale = std::min(sw / tw, sh / th);
