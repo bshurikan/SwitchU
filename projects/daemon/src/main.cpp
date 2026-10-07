@@ -207,6 +207,16 @@ static constexpr int kViewPollIntervalTicks = 200;
 static constexpr int kViewPollAttempts = 6;
 static int  g_menuRelaunchCooldown = 0;
 static int  g_menuFastExitCount = 0;
+// MenuReady for the current Album holder session. Used to detect BadGfxInit /
+// early aborts that exit before the menu can talk to the daemon.
+static bool g_menuReadyThisSession = false;
+static int  g_menuGfxRelaunchTries = 0;
+static int  g_menuGfxRelaunchDelay = 0;
+static bool g_menuGfxRelaunchPending = false;
+static constexpr int kMenuGfxRelaunchMaxTries = 3;
+static constexpr int kMenuGfxRelaunchDelayTicks = 30; // ~300ms at 10ms tick
+static constexpr uint64_t kMenuEarlyExitNs = 2'500'000'000ULL;
+static constexpr uint64_t kHomeMenuSettleNs = 80'000'000ULL;
 static s32      g_lastRecordCount = 0;
 static uint64_t g_lastRecordTids[1024] = {};
 static uint32_t g_lastViewFlags[1024]  = {};
@@ -851,6 +861,10 @@ static Result launchPendingHomeMenu() {
     switchu::FileLog::log(
         "[%s] HOME foreground acquired; launching MainMenu status.running=%d suspended=0x%016lX",
         source, status.app_running ? 1 : 0, status.suspended_app_id);
+    // Give VI a beat after the app loses foreground before Album creates a layer.
+    // A rare BadGfxInit race was observed when HOME relaunched the menu immediately.
+    svcSleepThread(kHomeMenuSettleNs);
+    g_menuReadyThisSession = false;
     const uint64_t launchStartedAt = armGetSystemTick();
     const Result rc = daemon::menu_la::launch(smi::MenuStartMode::MainMenu, status);
     const uint64_t launchDoneAt = armGetSystemTick();
@@ -1544,6 +1558,10 @@ static void handleMenuCommand() {
 
     case smi::SystemMessage::MenuReady:
         switchu::FileLog::log("[smi] menu ready");
+        g_menuReadyThisSession = true;
+        g_menuGfxRelaunchTries = 0;
+        g_menuGfxRelaunchDelay = 0;
+        g_menuGfxRelaunchPending = false;
         g_lastOperationFailure = {};
         g_batteryRefreshPending.store(true);
         shortenCatalogHold(kCatalogHoldAfterMenuReadyNs);
@@ -1794,12 +1812,17 @@ static void mainLoop() {
 
     if (g_menuRelaunchCooldown > 0)
         --g_menuRelaunchCooldown;
+    if (g_menuGfxRelaunchDelay > 0)
+        --g_menuGfxRelaunchDelay;
 
     if (daemon::menu_la::checkFinished()) {
         const uint64_t runtimeNs = daemon::menu_la::lastRuntimeNs();
-        switchu::FileLog::log("[main] menu exited (reason=%d runtime=%lums)",
+        const bool sawReady = g_menuReadyThisSession;
+        g_menuReadyThisSession = false;
+        switchu::FileLog::log("[main] menu exited (reason=%d runtime=%lums ready=%d)",
             (int)daemon::menu_la::exitReason(),
-            static_cast<unsigned long>(runtimeNs / 1'000'000ULL));
+            static_cast<unsigned long>(runtimeNs / 1'000'000ULL),
+            sawReady ? 1 : 0);
         if (runtimeNs < 1'000'000'000ULL)
             ++g_menuFastExitCount;
         else
@@ -1809,6 +1832,50 @@ static void mainLoop() {
             switchu::FileLog::log("[main] menu fast-exit guard active count=%d cooldown=%d",
                                   g_menuFastExitCount, g_menuRelaunchCooldown);
             g_menuFastExitCount = 0;
+        }
+        // Early exit before MenuReady (e.g. LibnxError_BadGfxInit during __nx_win_init)
+        // used to leave the daemon in foreground with a suspended app and no UI.
+        // Retry a few times after a short settle so HOME-from-app can recover.
+        if (!sawReady
+            && runtimeNs < kMenuEarlyExitNs
+            && g_menuRelaunchCooldown <= 0
+            && g_actionQueue.empty()
+            && !g_pendingHomeMenuLaunch
+            && !g_foregroundAppletActive
+            && !g_menuGfxRelaunchPending
+            && g_menuGfxRelaunchTries < kMenuGfxRelaunchMaxTries) {
+            ++g_menuGfxRelaunchTries;
+            g_menuGfxRelaunchDelay = kMenuGfxRelaunchDelayTicks;
+            g_menuGfxRelaunchPending = true;
+            switchu::FileLog::log(
+                "[main] menu died before ready; scheduling gfx relaunch try=%d/%d delay=%d",
+                g_menuGfxRelaunchTries, kMenuGfxRelaunchMaxTries, g_menuGfxRelaunchDelay);
+        } else if (sawReady) {
+            g_menuGfxRelaunchTries = 0;
+            g_menuGfxRelaunchPending = false;
+        }
+        didWork = true;
+    }
+
+    if (g_menuGfxRelaunchPending
+        && g_menuGfxRelaunchDelay == 0
+        && !daemon::menu_la::hasHolder()
+        && !g_pendingHomeMenuLaunch
+        && !g_foregroundAppletActive
+        && g_actionQueue.empty()
+        && g_menuRelaunchCooldown <= 0) {
+        g_menuGfxRelaunchPending = false;
+        switchu::FileLog::log("[main] gfx relaunch firing try=%d suspended_app=%d",
+                              g_menuGfxRelaunchTries,
+                              daemon::app::isRunning() ? 1 : 0);
+        g_menuReadyThisSession = false;
+        svcSleepThread(kHomeMenuSettleNs);
+        const Result rc = daemon::menu_la::launch(smi::MenuStartMode::MainMenu,
+                                                  buildSystemStatus());
+        switchu::FileLog::log("[main] gfx relaunch rc=0x%X", rc);
+        if (R_FAILED(rc) && g_menuGfxRelaunchTries < kMenuGfxRelaunchMaxTries) {
+            g_menuGfxRelaunchPending = true;
+            g_menuGfxRelaunchDelay = kMenuGfxRelaunchDelayTicks;
         }
         didWork = true;
     }
@@ -1843,12 +1910,15 @@ static bool mainLoopNeedsFastTick() {
     if (g_powerSequenceStarted.load())
         return false;
     if (shouldDeferViewPolling()) {
-        return g_menuRelaunchCooldown > 0 || !g_actionQueue.empty();
+        return g_menuRelaunchCooldown > 0 || g_menuGfxRelaunchDelay > 0
+            || g_menuGfxRelaunchPending || !g_actionQueue.empty();
     }
     return g_eventPollsRemaining > 0
         || g_appCatalogRefreshPending.load()
         || g_controlCacheRefreshPending.load()
         || g_menuRelaunchCooldown > 0
+        || g_menuGfxRelaunchDelay > 0
+        || g_menuGfxRelaunchPending
         || !g_actionQueue.empty();
 }
 
