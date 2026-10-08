@@ -95,17 +95,23 @@ int mpegSampleRate(int version, int rateIndex) {
     return rates[version][rateIndex];
 }
 
-float estimateMp3DurationSeconds(const std::string& path, int id3TagBytes) {
+struct Mp3DurationEstimate {
+    float seconds = 0.f;
+    bool reliable = false; // Xing/Info frame count (not a CBR bitrate guess)
+};
+
+Mp3DurationEstimate estimateMp3Duration(const std::string& path, int id3TagBytes) {
+    Mp3DurationEstimate out;
     std::ifstream f(path, std::ios::binary | std::ios::ate);
-    if (!f) return 0.f;
+    if (!f) return out;
     const auto fileSize = static_cast<long long>(f.tellg());
-    if (fileSize <= id3TagBytes + 4) return 0.f;
+    if (fileSize <= id3TagBytes + 4) return out;
 
     f.seekg(id3TagBytes, std::ios::beg);
     unsigned char buf[4096]{};
     f.read(reinterpret_cast<char*>(buf), sizeof(buf));
     const int n = static_cast<int>(f.gcount());
-    if (n < 4) return 0.f;
+    if (n < 4) return out;
 
     int frameAt = -1;
     for (int i = 0; i + 3 < n; ++i) {
@@ -114,7 +120,7 @@ float estimateMp3DurationSeconds(const std::string& path, int id3TagBytes) {
             break;
         }
     }
-    if (frameAt < 0) return 0.f;
+    if (frameAt < 0) return out;
 
     const unsigned char b1 = buf[frameAt + 1];
     const unsigned char b2 = buf[frameAt + 2];
@@ -124,7 +130,7 @@ float estimateMp3DurationSeconds(const std::string& path, int id3TagBytes) {
     const int rateIndex = (b2 >> 2) & 0x3;
     const int bitrate = mpegBitrateKbps(version, layer, bitrateIndex);
     const int sampleRate = mpegSampleRate(version, rateIndex);
-    if (bitrate <= 0 || sampleRate <= 0) return 0.f;
+    if (bitrate <= 0 || sampleRate <= 0) return out;
 
     const bool mpeg1 = (version == 3);
     const int channels = ((buf[frameAt + 3] >> 6) & 0x3) == 3 ? 1 : 2;
@@ -143,17 +149,29 @@ float estimateMp3DurationSeconds(const std::string& path, int id3TagBytes) {
                     (static_cast<unsigned int>(buf[xingAt + 9]) << 16) |
                     (static_cast<unsigned int>(buf[xingAt + 10]) << 8) |
                     static_cast<unsigned int>(buf[xingAt + 11]);
-                if (frames > 0)
-                    return static_cast<float>(frames) * static_cast<float>(samplesPerFrame)
-                           / static_cast<float>(sampleRate);
+                if (frames > 0) {
+                    out.seconds = static_cast<float>(frames) * static_cast<float>(samplesPerFrame)
+                                  / static_cast<float>(sampleRate);
+                    out.reliable = true;
+                    return out;
+                }
             }
         }
     }
 
     const long long audioBytes = fileSize - id3TagBytes;
-    if (audioBytes <= 0) return 0.f;
-    return static_cast<float>(audioBytes * 8.0 / (static_cast<double>(bitrate) * 1000.0));
+    if (audioBytes <= 0) return out;
+    // Bitrate × size is only a guess (especially for VBR) — not safe for hard seeks.
+    out.seconds = static_cast<float>(audioBytes * 8.0 / (static_cast<double>(bitrate) * 1000.0));
+    out.reliable = false;
+    return out;
 }
+
+// Deep Mix_SetMusicPosition into MP3 has frozen the menu on Switch (SDL_mixer /
+// mpg123). Shallow resume seeks (~30s) are fine; multi-minute jumps are not.
+constexpr float kMaxSafeMp3ResumeSeekSeconds = 90.f;
+// Let Mix_PlayMusic settle a few frames before jumping into the stream.
+constexpr int kDeferredSeekWarmupFrames = 20;
 
 void extractApicCover(const char* payload, int frameSize, std::vector<uint8_t>& out) {
     out.clear();
@@ -256,11 +274,25 @@ std::string AudioManager::cleanedFilenameTitle(const std::string& filename) {
     return out;
 }
 
+bool AudioManager::pathLooksLikeMp3(const std::string& path) {
+    if (path.size() < 4)
+        return false;
+    const std::string ext = path.substr(path.size() - 4);
+    return ext == ".mp3" || ext == ".MP3" || ext == ".Mp3";
+}
+
 void AudioManager::readMp3Metadata(const std::string& path, MusicTrackInfo& info) {
     info.title.clear();
     info.artist.clear();
     info.coverArt.clear();
     info.durationSeconds = 0.f;
+    info.seekReliable = false;
+
+    auto applyEstimate = [&](int id3TagBytes) {
+        const Mp3DurationEstimate est = estimateMp3Duration(path, id3TagBytes);
+        info.durationSeconds = est.seconds;
+        info.seekReliable = est.reliable;
+    };
 
     std::ifstream f(path, std::ios::binary);
     if (!f)
@@ -268,24 +300,24 @@ void AudioManager::readMp3Metadata(const std::string& path, MusicTrackInfo& info
     char header[10]{};
     f.read(header, 10);
     if (f.gcount() < 10 || std::memcmp(header, "ID3", 3) != 0) {
-        info.durationSeconds = estimateMp3DurationSeconds(path, 0);
+        applyEstimate(0);
         return;
     }
     const int version = static_cast<unsigned char>(header[3]);
     if (version < 2 || version > 4) {
-        info.durationSeconds = estimateMp3DurationSeconds(path, 0);
+        applyEstimate(0);
         return;
     }
     const int tagSize = id3SynchSafe(reinterpret_cast<const unsigned char*>(header + 6));
     if (tagSize <= 0 || tagSize > 4 * 1024 * 1024) {
-        info.durationSeconds = estimateMp3DurationSeconds(path, 0);
+        applyEstimate(0);
         return;
     }
     std::vector<char> tag(static_cast<size_t>(tagSize));
     f.read(tag.data(), tagSize);
     const int got = static_cast<int>(f.gcount());
     if (got <= 0) {
-        info.durationSeconds = estimateMp3DurationSeconds(path, 0);
+        applyEstimate(0);
         return;
     }
 
@@ -337,9 +369,12 @@ void AudioManager::readMp3Metadata(const std::string& path, MusicTrackInfo& info
     }
 
     const int id3Total = 10 + tagSize;
-    info.durationSeconds = tlenSeconds > 0.f
-        ? tlenSeconds
-        : estimateMp3DurationSeconds(path, id3Total);
+    if (tlenSeconds > 0.f) {
+        info.durationSeconds = tlenSeconds;
+        info.seekReliable = true;
+    } else {
+        applyEstimate(id3Total);
+    }
 }
 
 bool AudioManager::loadTrack(const std::string& path, const std::string& albumFolder) {
@@ -357,7 +392,12 @@ bool AudioManager::loadTrack(const std::string& path, const std::string& albumFo
     info.relativeKey = albumFolder.empty()
         ? info.filename
         : (albumFolder + "/" + info.filename);
-    readMp3Metadata(path, info);
+    if (pathLooksLikeMp3(path)) {
+        readMp3Metadata(path, info);
+    } else {
+        // OGG/WAV (and other Mix containers) seek reliably via SDL_mixer.
+        info.seekReliable = true;
+    }
     if (info.title.empty())
         info.title = cleanedFilenameTitle(info.filename);
 
@@ -375,6 +415,8 @@ void AudioManager::clearTracks() {
     m_playing.store(false);
     m_paused = false;
     m_positionSeconds = 0.f;
+    m_deferredSeekSeconds = -1.f;
+    m_deferredSeekWarmupFrames = 0;
     for (auto* m : m_tracks) Mix_FreeMusic(m);
     m_tracks.clear();
     m_trackInfos.clear();
@@ -710,6 +752,10 @@ void AudioManager::setRepeatMode(MusicRepeatMode mode) {
 }
 
 void AudioManager::update(float dt) {
+    // Apply resume seeks off the splash/GPU burst, after Mix_PlayMusic has
+    // actually started (see updateDeferredSeek warm-up).
+    updateDeferredSeek();
+
     if (m_restoreFadeIn && dt > 0.f) {
         // Soft fade-in after mute-until-seek restore (HOME AppletReturn).
         m_musicFade = std::min(1.f, m_musicFade + dt / 0.45f);
@@ -789,24 +835,30 @@ void AudioManager::restorePlaybackState(int trackIndex,
     }
 
     m_current = resolved;
-    const float safeSeek = dropSeek ? 0.f : sanitizeSeekSecondsUnlocked(positionSeconds);
+    const float safeSeek = dropSeek ? 0.f : sanitizeResumeSeekUnlocked(positionSeconds);
     if (!dropSeek && safeSeek + 0.01f < std::max(0.f, positionSeconds)
         && positionSeconds > 0.25f) {
         std::fprintf(stderr,
-                     "[Audio] Clamped/dropped unsafe resume seek %.2fs (duration=%.2fs)\n",
+                     "[Audio] Clamped/dropped unsafe resume seek %.2fs (duration=%.2fs reliable=%d mp3=%d)\n",
                      positionSeconds,
-                     durationSeconds());
+                     durationSeconds(),
+                     (m_current >= 0 && m_current < static_cast<int>(m_trackInfos.size()))
+                         ? (m_trackInfos[static_cast<size_t>(m_current)].seekReliable ? 1 : 0)
+                         : 0,
+                     currentTrackIsMp3Unlocked() ? 1 : 0);
     }
     m_positionSeconds = safeSeek;
     m_deferredSeekSeconds = -1.f;
+    m_deferredSeekWarmupFrames = 0;
     m_restoreFadeIn = false;
     if (playing) {
         // Stay silent only until the deferred seek lands, then snap to full volume.
         m_musicFade = 0.f;
         applyMusicVolume();
-        if (safeSeek > 0.25f)
+        if (safeSeek > 0.25f) {
             m_deferredSeekSeconds = safeSeek;
-        else {
+            m_deferredSeekWarmupFrames = kDeferredSeekWarmupFrames;
+        } else {
             m_musicFade = 1.f;
             applyMusicVolume();
         }
@@ -828,7 +880,13 @@ void AudioManager::updateDeferredSeek() {
         std::lock_guard<std::mutex> lk(m_trackMutex);
         if (m_deferredSeekSeconds < 0.f || !m_playing.load())
             return;
-        seekTo = sanitizeSeekSecondsUnlocked(m_deferredSeekSeconds);
+        if (m_deferredSeekWarmupFrames > 0) {
+            --m_deferredSeekWarmupFrames;
+            return;
+        }
+        if (!Mix_PlayingMusic())
+            return;
+        seekTo = sanitizeResumeSeekUnlocked(m_deferredSeekSeconds);
         m_deferredSeekSeconds = -1.f;
         m_positionSeconds = seekTo;
         if (seekTo <= 0.25f) {
@@ -980,6 +1038,31 @@ float AudioManager::sanitizeSeekSecondsForDuration(float positionSeconds,
 
 float AudioManager::sanitizeSeekSecondsUnlocked(float positionSeconds) const {
     return sanitizeSeekSecondsForDuration(positionSeconds, durationSeconds());
+}
+
+float AudioManager::sanitizeResumeSeekUnlocked(float positionSeconds) const {
+    const float clamped = sanitizeSeekSecondsUnlocked(positionSeconds);
+    if (clamped <= 0.25f)
+        return 0.f;
+    if (!currentTrackIsMp3Unlocked())
+        return clamped;
+    if (m_current < 0 || m_current >= static_cast<int>(m_trackInfos.size()))
+        return 0.f;
+    const auto& info = m_trackInfos[static_cast<size_t>(m_current)];
+    // Bitrate-guessed lengths are not trustworthy for mpg123 jumps.
+    if (!info.seekReliable)
+        return 0.f;
+    // Deep MP3 hard-seeks have frozen AppletReturn (menu.log stopped between
+    // "music restore target" and "music playback restore returned").
+    if (clamped > kMaxSafeMp3ResumeSeekSeconds)
+        return 0.f;
+    return clamped;
+}
+
+bool AudioManager::currentTrackIsMp3Unlocked() const {
+    if (m_current < 0 || m_current >= static_cast<int>(m_trackInfos.size()))
+        return false;
+    return pathLooksLikeMp3(m_trackInfos[static_cast<size_t>(m_current)].path);
 }
 
 bool AudioManager::currentTrackFileExistsUnlocked() const {
