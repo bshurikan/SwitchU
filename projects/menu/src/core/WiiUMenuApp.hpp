@@ -287,7 +287,7 @@ private:
     float m_deletePageShow = 0.f;
     float m_deletePageHold = 0.f;
     bool  m_touchDeletePage = false;
-    bool  m_deletePagePlusArmed = false; // Plus pressed while empty-page delete is available
+    bool  m_deletePageMinusArmed = false; // Minus pressed while empty-page delete is available
     int findTitleIndex(uint64_t titleId) const;
     bool focusTitle(uint64_t titleId, bool instantFocus = false);
     void markSuspendedIcon(uint64_t titleId);

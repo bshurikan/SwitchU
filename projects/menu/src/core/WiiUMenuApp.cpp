@@ -5133,7 +5133,7 @@ void WiiUMenuApp::onUpdateAwake(float dt) {
             if (!showDelete) {
                 m_touchDeletePage = false;
                 m_deletePageHold = 0.f;
-                m_deletePagePlusArmed = false;
+                m_deletePageMinusArmed = false;
             }
         }
 
@@ -5155,51 +5155,36 @@ void WiiUMenuApp::onUpdateAwake(float dt) {
             m_addPageTouchHold = false;
         }
 
-        // Hold Plus (Start) on an empty page to open the delete-page menu —
-        // mirrors hold-ZR on the add-page control.
+        // Hold Minus (Select) on an empty page to open the delete-page menu —
+        // matches the on-screen − control. Short Minus still switches view.
         if (deletePageAvailable()) {
-            if (app().input().isDown(nxui::Button::Plus)
-                && !app().input().isDown(nxui::Button::Minus))
-                m_deletePagePlusArmed = true;
-            const bool holdingPlus = m_deletePagePlusArmed
-                && app().input().isHeld(nxui::Button::Plus)
-                && !app().input().isDown(nxui::Button::Minus);
-            if (holdingPlus) {
+            if (app().input().isDown(nxui::Button::Minus)
+                && !app().input().isDown(nxui::Button::Plus))
+                m_deletePageMinusArmed = true;
+            const bool holdingMinus = m_deletePageMinusArmed
+                && app().input().isHeld(nxui::Button::Minus)
+                && !app().input().isDown(nxui::Button::Plus);
+            if (holdingMinus) {
                 m_deletePageHold = std::min(1.f, m_deletePageHold + dt / kAddPageHoldDur);
                 if (m_deletePageHold >= 1.f) {
                     m_deletePageHold = 0.f;
-                    m_deletePagePlusArmed = false;
+                    m_deletePageMinusArmed = false;
                     showDeletePageDialog();
                 }
             } else {
-                if (m_deletePagePlusArmed && app().input().isUp(nxui::Button::Plus)
-                    && m_deletePageHold < 0.35f
-                    && m_openFolderId == 0) {
-                    // Short Plus tap still opens Add when HOME empty-page delete
-                    // is showing (hold was for delete).
-                    auto* current = focusManager().current();
-                    if (current && current->tag() == "glossy_icon" && m_grid) {
-                        auto* icon = static_cast<GlossyIcon*>(current);
-                        const auto& icons = m_grid->allIcons();
-                        const auto found = std::find_if(
-                            icons.begin(), icons.end(),
-                            [icon](const auto& c) { return c.get() == icon; });
-                        const int index = found == icons.end()
-                            ? -1 : static_cast<int>(std::distance(icons.begin(), found));
-                        if (index >= 0 && index < m_model.count()
-                            && (m_model.at(index).titleId == 0
-                                || m_model.at(index).kind == GridEntryKind::Empty))
-                            showAddContextMenu(index, icon->focusRect());
-                    }
+                if (m_deletePageMinusArmed && app().input().isUp(nxui::Button::Minus)
+                    && m_deletePageHold < 0.35f) {
+                    // Short tap: same as normal Minus — switch grid view.
+                    toggleAppLayoutMode();
                 }
                 m_deletePageHold = std::max(0.f,
                     m_deletePageHold - dt / (kAddPageHoldDur * 0.4f));
-                if (!app().input().isHeld(nxui::Button::Plus))
-                    m_deletePagePlusArmed = false;
+                if (!app().input().isHeld(nxui::Button::Minus))
+                    m_deletePageMinusArmed = false;
             }
         } else {
             m_deletePageHold = 0.f;
-            m_deletePagePlusArmed = false;
+            m_deletePageMinusArmed = false;
         }
     }
 
@@ -5587,11 +5572,8 @@ void WiiUMenuApp::onUpdateAwake(float dt) {
     // the focused icon still being attached through every transient grid
     // rebuild, which could make Plus silently disappear after a page/model
     // update even though the icon remained visibly selected.
-    // When an empty-page delete control is up, Plus is armed for hold-to-delete
-    // (handled above). Skip the instant Plus menu so a hold is not also an Add.
     if (app().input().isDown(nxui::Button::Plus) &&
         !app().input().isDown(nxui::Button::Minus) &&
-        !deletePageAvailable() &&
         m_navigator.route() == switchu::navigation::Route::Home &&
         !m_editMode &&
         !(m_contextMenu && m_contextMenu->isActive()) &&
@@ -5637,8 +5619,12 @@ void WiiUMenuApp::onUpdateAwake(float dt) {
     }
 #endif
 
+    // When an empty-page delete control is up, Minus is armed for hold-to-delete
+    // (handled above). Skip the instant view toggle so a hold is not also a
+    // layout switch; short tap still toggles on release.
     if (app().input().isDown(nxui::Button::Minus) &&
         !app().input().isDown(nxui::Button::Plus) &&
+        !deletePageAvailable() &&
         m_navigator.route() == switchu::navigation::Route::Home &&
         !m_editMode &&
         !(m_contextMenu && m_contextMenu->isActive()) &&
@@ -6005,16 +5991,12 @@ std::vector<WiiUMenuApp::ActionHint> WiiUMenuApp::buildActionHints() {
         } else if (m_openFolderId == 0 && deletePageAvailable()) {
 #ifdef SWITCHU_MENU
             add(buttonGlyph(nxui::Button::A), i18n.tr("page.delete", "Delete page"));
-            // Hold Plus mirrors hold-ZR on the add-page control.
-            add(buttonGlyph(nxui::Button::Plus),
-                i18n.tr("page.delete_hold", "Hold to delete"));
+            add(buttonGlyph(nxui::Button::Plus), i18n.tr("add.title", "Add"));
 #else
             add(buttonGlyph(nxui::Button::A), i18n.tr("page.delete", "Delete page"));
 #endif
         } else if (m_openFolderId != 0 && deletePageAvailable()) {
             add(buttonGlyph(nxui::Button::A), i18n.tr("page.delete", "Delete page"));
-            add(buttonGlyph(nxui::Button::Plus),
-                i18n.tr("page.delete_hold", "Hold to delete"));
         } else if (m_openFolderId == 0) {
 #ifdef SWITCHU_MENU
             add(buttonGlyph(nxui::Button::Plus), i18n.tr("add.title", "Add"));
@@ -6038,7 +6020,12 @@ std::vector<WiiUMenuApp::ActionHint> WiiUMenuApp::buildActionHints() {
     }
 
     if (m_navigator.route() == switchu::navigation::Route::Home && !m_editMode) {
-        add(buttonGlyph(nxui::Button::Minus), i18n.tr("hint.switch_layout", "Switch view"));
+        if (deletePageAvailable())
+            add(buttonGlyph(nxui::Button::Minus),
+                i18n.tr("page.minus_hint", "View · hold delete"));
+        else
+            add(buttonGlyph(nxui::Button::Minus),
+                i18n.tr("hint.switch_layout", "Switch view"));
     }
 
     // Paging lives on the arrows flanking the grid, not in the capsules.
@@ -6824,9 +6811,9 @@ void WiiUMenuApp::renderDeletePageButton(nxui::Renderer& ren) {
         }
     }
 
-    // Match the add-page control: button glyph sits under the circle.
+    // Match the on-screen −: Minus glyph sits under the circle (hold to delete).
     constexpr float kGlyphScale = 0.70f;
-    const std::string glyph = buttonGlyph(nxui::Button::Plus);
+    const std::string glyph = buttonGlyph(nxui::Button::Minus);
     const nxui::Vec2 gs = m_fontIcons.measure(glyph);
     ren.drawText(glyph, {cx - gs.x * kGlyphScale * 0.5f, cy + ring + 6.f},
                  &m_fontIcons, m_theme.textPrimary.withAlpha(0.9f * e), kGlyphScale);
