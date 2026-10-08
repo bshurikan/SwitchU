@@ -36,6 +36,10 @@ struct MusicTrackInfo {
     std::string title;
     std::string artist;
     float durationSeconds = 0.f;
+    // True when duration comes from Xing/Info frames, ID3 TLEN, or a
+    // non-MP3 container. False for bitrate-guessed MP3 lengths — those are
+    // unsafe inputs for Mix_SetMusicPosition on Switch.
+    bool seekReliable = false;
     std::vector<uint8_t> coverArt; // JPEG/PNG bytes from ID3 APIC when present
 
     std::string displayTitle() const {
@@ -107,7 +111,9 @@ public:
                               bool playing,
                               const std::string& trackKey = {});
     /// Apply a deferred Mix_SetMusicPosition after HOME is interactive.
+    /// No-ops while warm-up frames remain or nothing is pending.
     void updateDeferredSeek();
+    bool hasDeferredSeek() const { return m_deferredSeekSeconds >= 0.f; }
 
     /// Current track's playlist key, or empty if none.
     std::string currentTrackKey() const;
@@ -138,9 +144,14 @@ private:
     int findTrackIndexByKeyUnlocked(const std::string& trackKey) const;
     float sanitizeSeekSecondsForDuration(float positionSeconds, float durationSeconds) const;
     float sanitizeSeekSecondsUnlocked(float positionSeconds) const;
+    /// Resume-only sanitizer: drops unreliable / deep MP3 hard-seeks that can
+    /// freeze SDL_mixer on Switch, while keeping shallow mid-track resume.
+    float sanitizeResumeSeekUnlocked(float positionSeconds) const;
     bool currentTrackFileExistsUnlocked() const;
+    bool currentTrackIsMp3Unlocked() const;
     static std::string cleanedFilenameTitle(const std::string& filename);
     static void readMp3Metadata(const std::string& path, MusicTrackInfo& info);
+    static bool pathLooksLikeMp3(const std::string& path);
 
     std::mutex m_trackMutex;
     std::vector<Mix_Music*> m_tracks;
@@ -152,6 +163,7 @@ private:
     float m_musicFade = 1.f;
     float m_positionSeconds = 0.f;
     float m_deferredSeekSeconds = -1.f;
+    int   m_deferredSeekWarmupFrames = 0;
     bool  m_restoreFadeIn = false;
     std::atomic<bool> m_playing{false};
     bool  m_paused = false;

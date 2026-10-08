@@ -5296,17 +5296,19 @@ void WiiUMenuApp::onUpdateAwake(float dt) {
                                          m_config.musicPositionSeconds,
                                          m_config.musicEnabled,
                                          m_config.musicTrackKey);
-            // Seek + unmute immediately — splash/deferred uploads are already done.
-            m_audio.updateDeferredSeek();
-            m_audioSeekAfterHoldoff = false;
-            DebugLog::log("[boot] music playback restore returned");
+            // Hard seeks run from AudioManager::update after a short warm-up so
+            // Mix_SetMusicPosition is not on the splash/GPU-upload frame (deep
+            // MP3 seeks have frozen AppletReturn). Unsafe seeks are dropped
+            // inside sanitizeResumeSeekUnlocked — resume still picks the track.
+            m_audioSeekAfterHoldoff = m_audio.hasDeferredSeek();
+            DebugLog::log("[boot] music playback restore returned deferredSeek=%d",
+                          m_audio.hasDeferredSeek() ? 1 : 0);
         }
     } else if (m_audioSeekAfterHoldoff
-               && !leaveSplashActive()) {
-        DebugLog::log("[boot] applying deferred music seek");
+               && !leaveSplashActive()
+               && !m_audio.hasDeferredSeek()) {
+        DebugLog::log("[boot] deferred music seek settled");
         m_audioSeekAfterHoldoff = false;
-        m_audio.updateDeferredSeek();
-        DebugLog::log("[boot] deferred music seek returned");
     }
 
     if (m_audioInitPending) {
