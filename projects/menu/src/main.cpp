@@ -161,17 +161,27 @@ extern "C" void __appInit(void) {
 
     // Single VI/layer probe before libnx's fatal BadGfxInit path.
     // Retrying viInitialize after a failure (e.g. 0xF601) was observed to panic VI
-    // itself. Prefer an immediate clean exit so the daemon can settle and relaunch.
+    // itself. Prefer an immediate clean exit; daemon delays at most one relaunch.
     {
-        Result lastRc = viInitialize(ViServiceType_Default);
-        if (R_FAILED(lastRc)) {
-            DebugLog::log(
-                "[menu] gfx probe viInitialize fail rc=0x%X; clean exit for daemon relaunch",
-                lastRc);
+        auto failGfxProbe = [](const char* step, Result rc) {
+            // Sticky marker so daemon.log can correlate after a hard reboot.
+            if (FILE* f = std::fopen("sdmc:/config/SwitchU/last_gfx_fail.txt", "w")) {
+                std::fprintf(f, "step=%s rc=0x%X\n", step, rc);
+                std::fflush(f);
+                std::fclose(f);
+                fsdevCommitDevice("sdmc");
+            }
+            switchu::FileLog::logCommit(
+                "[menu] gfx probe %s fail rc=0x%X; clean exit (daemon may delay/skip relaunch)",
+                step, rc);
             DebugLog::closeFileLog();
             switchu::FileLog::close();
             svcExitProcess();
-        }
+        };
+
+        Result lastRc = viInitialize(ViServiceType_Default);
+        if (R_FAILED(lastRc))
+            failGfxProbe("viInitialize", lastRc);
 
         ViDisplay display{};
         ViLayer layer{};
@@ -179,13 +189,15 @@ extern "C" void __appInit(void) {
         bool haveDisplay = false;
         bool haveLayer = false;
         lastRc = viOpenDefaultDisplay(&display);
+        if (R_FAILED(lastRc)) {
+            viExit();
+            failGfxProbe("viOpenDefaultDisplay", lastRc);
+        }
+        haveDisplay = true;
+        lastRc = viCreateLayer(&display, &layer);
         if (R_SUCCEEDED(lastRc)) {
-            haveDisplay = true;
-            lastRc = viCreateLayer(&display, &layer);
-            if (R_SUCCEEDED(lastRc)) {
-                haveLayer = true;
-                gfxReady = true;
-            }
+            haveLayer = true;
+            gfxReady = true;
         }
 
         if (haveLayer)
@@ -195,13 +207,8 @@ extern "C" void __appInit(void) {
         viExit();
 
         if (!gfxReady) {
-            DebugLog::log(
-                "[menu] gfx probe layer fail rc=0x%X; clean exit for daemon relaunch",
-                lastRc);
-            DebugLog::closeFileLog();
-            switchu::FileLog::close();
             // Avoid LibnxError_BadGfxInit (and the vi/omm cascade it caused).
-            svcExitProcess();
+            failGfxProbe("viCreateLayer", lastRc);
         }
     }
 
