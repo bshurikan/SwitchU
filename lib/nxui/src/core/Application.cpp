@@ -202,8 +202,8 @@ void Application::dispatchInput() {
 
 void Application::run() {
     uint64_t prevTick = armGetSystemTick();
-    float idleSeconds = 0.f;
-    bool skipIdleFrame = false;
+    m_idleSeconds = 0.f;
+    m_idleFrameCounter = 0;
 
     while (m_running) {
         uint64_t nowTick = armGetSystemTick();
@@ -226,10 +226,10 @@ void Application::run() {
 
         m_input.update();
         if (m_input.hasUserActivity()) {
-            idleSeconds = 0.f;
-            skipIdleFrame = false;
+            m_idleSeconds = 0.f;
+            m_idleFrameCounter = 0;
         } else {
-            idleSeconds += dt;
+            m_idleSeconds += dt;
         }
         dispatchInput();
 
@@ -246,9 +246,9 @@ void Application::run() {
                 // Keep input/update responsive, but present every other frame
                 // after the UI has been idle long enough for transitions to
                 // settle. Any new input immediately restores 60 Hz.
-                if (idleSeconds >= 2.f) {
-                    skipIdleFrame = !skipIdleFrame;
-                    if (skipIdleFrame) {
+                if (m_idleSeconds >= 2.f) {
+                    m_idleFrameCounter = (m_idleFrameCounter + 1) % m_idleRenderDivider;
+                    if (m_idleFrameCounter != 0) {
                         svcSleepThread(16'000'000ULL);
                         continue;
                     }

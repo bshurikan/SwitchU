@@ -92,6 +92,35 @@
     },
     "user_profile": "User profile"
   },
+  "lock": {
+    "enter": "Press A to enter",
+    "hint": "Any other button, or a tap, also works",
+    "game_paused": "paused",
+    "date_format": "{weekday}, {month} {day}",
+    "weekday": {
+      "0": "Sunday",
+      "1": "Monday",
+      "2": "Tuesday",
+      "3": "Wednesday",
+      "4": "Thursday",
+      "5": "Friday",
+      "6": "Saturday"
+    },
+    "month": {
+      "1": "January",
+      "2": "February",
+      "3": "March",
+      "4": "April",
+      "5": "May",
+      "6": "June",
+      "7": "July",
+      "8": "August",
+      "9": "September",
+      "10": "October",
+      "11": "November",
+      "12": "December"
+    }
+  },
   "tutorial": {
     "header": "SwitchU tutorial",
     "test_label": "Test",
@@ -695,6 +724,8 @@
     },
     "options": {
       "action_hints": "Action Hints",
+      "lock_screen": "Lock Screen",
+      "lock_screen_desc": "Show a lock screen when the console wakes from sleep.",
       "action_hints_desc": "Choose how contextual controls appear in the bottom-right corner.",
       "sort_large_tiles": "Sort Large Tiles Too",
       "sort_large_tiles_desc": "A-Z and Recent also move applications that use a larger tile size.",

@@ -129,6 +129,24 @@ inline Result setInternetTimeSync(bool enabled) {
     return waitForCommandResponse(requestId);
 }
 
+inline Result setLockScreen(bool enabled) {
+    uint8_t buf[sizeof(smi::CommandHeader) + sizeof(smi::LockScreenArgs)]{};
+    auto* hdr = reinterpret_cast<smi::CommandHeader*>(buf);
+    auto* args = reinterpret_cast<smi::LockScreenArgs*>(buf + sizeof(smi::CommandHeader));
+
+    hdr->magic = smi::kCommandMagic;
+    hdr->message = static_cast<uint32_t>(smi::SystemMessage::SetLockScreen);
+    const uint64_t requestId = nextRequestId();
+    hdr->request_id = requestId;
+    args->enabled = enabled ? 1 : 0;
+
+    // Fire and forget. Waiting for the reply would read the same channel the
+    // daemon uses for its notifications (battery, sleep, wake) and throw away
+    // whatever is not the reply; the daemon's answer is ignored later because
+    // it carries the command magic, not the notification magic.
+    return pushOutStorage(buf, sizeof(buf));
+}
+
 inline Result resumeApplication() {
     return sendSimple(smi::SystemMessage::ResumeApplication);
 }

@@ -51,6 +51,14 @@ public:
     void setRenderEnabled(bool e) { m_renderEnabled = e; }
     bool renderEnabled() const    { return m_renderEnabled; }
 
+    /// While the UI is idle (no input for 2 s) only one frame out of `divider`
+    /// is presented. 2 is the default (30 Hz); a mostly static screen such as
+    /// the lock screen can use a larger value to save power.
+    void setIdleRenderDivider(int divider) { m_idleRenderDivider = divider < 2 ? 2 : divider; }
+    /// Treat the UI as active again (back to full frame rate), e.g. when the
+    /// trigger was not a pad or touch event.
+    void resetIdle() { m_idleSeconds = 0.f; m_idleFrameCounter = 0; }
+
     /// Low-power console sleep.  No frame is presented, no input is dispatched
     /// and the loop parks on a 50 ms tick; the activity is still updated slowly
     /// so it can read the wake notification and resume.
@@ -69,6 +77,9 @@ private:
     std::unique_ptr<Activity> m_pendingActivity;
     bool m_running = true;
     bool m_renderEnabled = true;
+    int m_idleRenderDivider = 2;
+    float m_idleSeconds = 0.f;
+    int m_idleFrameCounter = 0;
     bool m_sleeping = false;
     uint64_t m_navHeldMask = 0;
     int m_navHeldFrames = 0;

@@ -190,6 +190,8 @@ extern "C" void __appExit(void) {
 static std::atomic<bool> g_running{true};
 static std::atomic<bool> g_powerSequenceStarted{false};
 static UEvent g_mainWakeEvent{};
+// Mirrors the menu's "lock screen" option; true until the menu says otherwise.
+static std::atomic<bool> g_lockScreenEnabled{true};
 static UEvent g_controlCacheWakeEvent{};
 static Event g_generalChannelEvent{};
 static bool g_generalChannelEventReady = false;
@@ -251,6 +253,13 @@ static bool g_pendingForegroundAppletHome = false;
 static bool g_pendingHomeMenuLaunch = false;
 static const char* g_pendingHomeMenuSource = nullptr;
 static uint64_t g_pendingHomeMenuStartedAt = 0;
+// Start mode used when the pending foreground handoff completes (MainMenu, or LockScreen after a wake).
+static smi::MenuStartMode g_pendingHomeMenuMode = smi::MenuStartMode::MainMenu;
+// A power-button sleep with a game in the foreground first shows the lock screen
+// (menu in LockScreen mode) and only goes to sleep once the menu is ready.
+static bool g_sleepAfterLock = false;
+static uint64_t g_sleepAfterLockStartedAt = 0;
+static void startSleepSequence(const char* source);
 static uint8_t g_lastBatteryPercent = 0xFF;
 static PsmChargerType g_lastChargerType = (PsmChargerType)0xFF;
 
@@ -848,11 +857,31 @@ static Result launchPendingHomeMenu() {
     g_pendingHomeMenuStartedAt = 0;
 
     const auto status = buildSystemStatus();
-    switchu::FileLog::log(
-        "[%s] HOME foreground acquired; launching MainMenu status.running=%d suspended=0x%016lX",
-        source, status.app_running ? 1 : 0, status.suspended_app_id);
+    const smi::MenuStartMode startMode = g_pendingHomeMenuMode;
+    g_pendingHomeMenuMode = smi::MenuStartMode::MainMenu;
+    if (startMode == smi::MenuStartMode::LockScreen) {
+        // Committed: if the console hangs around the lock screen, this survives.
+        switchu::FileLog::logCommit(
+            "[%s] foreground acquired; launching lock screen status.running=%d suspended=0x%016lX",
+            source, status.app_running ? 1 : 0, status.suspended_app_id);
+    } else {
+        switchu::FileLog::log(
+            "[%s] HOME foreground acquired; launching menu mode=%u status.running=%d suspended=0x%016lX",
+            source, static_cast<unsigned>(startMode), status.app_running ? 1 : 0, status.suspended_app_id);
+    }
     const uint64_t launchStartedAt = armGetSystemTick();
-    const Result rc = daemon::menu_la::launch(smi::MenuStartMode::MainMenu, status);
+    Result rc = daemon::menu_la::launch(startMode, status);
+    if (R_FAILED(rc) && startMode == smi::MenuStartMode::LockScreen) {
+        if (g_sleepAfterLock) {
+            // Going to sleep anyway, just without the lock screen.
+            g_sleepAfterLock = false;
+            switchu::FileLog::logCommit("[%s] lock launch FAIL 0x%X; sleeping without it", source, rc);
+            startSleepSequence("lock-launch-failed");
+        } else {
+            const Result resumeRc = daemon::app::resume();
+            switchu::FileLog::log("[%s] lock launch FAIL 0x%X; resuming the game rc=0x%X", source, rc, resumeRc);
+        }
+    }
     const uint64_t launchDoneAt = armGetSystemTick();
     switchu::FileLog::log(
         "[%s] HOME MainMenu launch rc=0x%X foreground_wait=%lums launch=%lums total=%lums",
@@ -897,10 +926,10 @@ static void startSleepSequence(const char* source) {
     pushNotification(smi::MenuMessage::SleepSequence);
     // Preserve the final state even if the sleep ends in a forced power loss.
     switchu::commitSdCard("sleep");
-    // The handoff is cooperative: give the menu a couple of frames to stop
-    // presenting and pause its audio instead of relying on the sleep landing
-    // a frame later.
-    svcSleepThread(50'000'000ULL);
+    // The handoff is cooperative: give the menu time to draw its lock screen,
+    // stop presenting and pause its audio instead of relying on the sleep
+    // landing a frame later.
+    svcSleepThread(250'000'000ULL);
     appletStartSleepSequence(true);
 }
 
@@ -1110,6 +1139,25 @@ static void handleAppletMessages() {
         // The application keeps its IApplicationAccessor across system sleep,
         // but must reacquire the foreground after wake. Keep our session state
         // in sync so the Wakeup path is allowed to call app::resume().
+        // With a game in the foreground, show the lock screen *before* sleeping:
+        // take the foreground like the HOME button does, start the menu in
+        // LockScreen mode and sleep once it reports ready. The display then keeps
+        // the finished lock screen as its last frame, so there is no black wait
+        // or stale game frame at wake.
+        if (g_lockScreenEnabled.load() && !g_sleepAfterLock && !g_pendingHomeMenuLaunch &&
+            daemon::app::isRunning() && daemon::app::hasForeground() &&
+            !daemon::menu_la::isActive() && !g_foregroundAppletActive) {
+            if (takeForegroundFromRunningApp("sleep-lock")) {
+                g_pendingHomeMenuLaunch = true;
+                g_pendingHomeMenuSource = "sleep-lock";
+                g_pendingHomeMenuStartedAt = armGetSystemTick();
+                g_pendingHomeMenuMode = smi::MenuStartMode::LockScreen;
+                g_sleepAfterLock = true;
+                g_sleepAfterLockStartedAt = g_pendingHomeMenuStartedAt;
+                switchu::FileLog::logCommit("[ae] sleep with a game: taking the foreground for the lock screen");
+                break;
+            }
+        }
         daemon::app::onHomeSuspend();
         // The console is going under on its own (idle plan or power button):
         // the menu needs the same handoff as a menu-initiated sleep.
@@ -1119,6 +1167,8 @@ static void handleAppletMessages() {
         case 26:
         switchu::FileLog::log("[ae] -> Wakeup");
         g_batteryRefreshPending.store(true);
+        // If the lock screen menu is up (shown before sleeping) it is told below;
+        // otherwise a running game simply comes back.
         if (daemon::app::isRunning() && !daemon::menu_la::isActive()) {
             Result rc = daemon::app::resume();
             if (R_FAILED(rc)) {
@@ -1542,11 +1592,24 @@ static void handleMenuCommand() {
         return;
     }
 
+    case smi::SystemMessage::SetLockScreen: {
+        auto args = reader.pop<smi::LockScreenArgs>();
+        g_lockScreenEnabled.store(args.enabled != 0);
+        switchu::FileLog::log("[smi] lock screen %s", args.enabled ? "enabled" : "disabled");
+        pushCommandResult(requestId, 0, "SetLockScreen");
+        return;
+    }
+
     case smi::SystemMessage::MenuReady:
         switchu::FileLog::log("[smi] menu ready");
         g_lastOperationFailure = {};
         g_batteryRefreshPending.store(true);
         shortenCatalogHold(kCatalogHoldAfterMenuReadyNs);
+        if (g_sleepAfterLock) {
+            g_sleepAfterLock = false;
+            switchu::FileLog::logCommit("[smi] lock screen menu ready: going to sleep");
+            startSleepSequence("lock-ready");
+        }
         break;
 
     case smi::SystemMessage::MenuClosing:
@@ -1817,6 +1880,21 @@ static void mainLoop() {
     }
 
     didWork |= consumeOneAction();
+
+    if (g_sleepAfterLock &&
+        armTicksToNs(armGetSystemTick() - g_sleepAfterLockStartedAt) > 3'500'000'000ULL) {
+        // The lock screen did not come up in time: sleep without it.
+        g_sleepAfterLock = false;
+        if (g_pendingHomeMenuLaunch && g_pendingHomeMenuMode == smi::MenuStartMode::LockScreen) {
+            g_pendingHomeMenuLaunch = false;
+            g_pendingHomeMenuSource = nullptr;
+            g_pendingHomeMenuStartedAt = 0;
+            g_pendingHomeMenuMode = smi::MenuStartMode::MainMenu;
+        }
+        switchu::FileLog::logCommit("[main] sleep-lock timed out; sleeping without the lock screen");
+        startSleepSequence("lock-timeout");
+        didWork = true;
+    }
 
     if (daemon::app::checkFinished()) {
         switchu::FileLog::log("[main] app exited");

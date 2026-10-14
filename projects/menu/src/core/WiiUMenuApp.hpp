@@ -19,6 +19,7 @@
 #include "widgets/QuickSettingsOverlay.hpp"
 #include "widgets/ContextMenu.hpp"
 #include "widgets/ProgressDialog.hpp"
+#include "widgets/LockScreen.hpp"
 #include "widgets/AppletButton.hpp"
 #include "widgets/PageIndicator.hpp"
 #include "widgets/ProfileCarouselScreen.hpp"
@@ -85,7 +86,8 @@ public:
     void setTutorialStartupFade(bool enabled);
 
 #ifdef SWITCHU_MENU
-    void setStartupStatus(const switchu::smi::SystemStatus& status, bool fastReturn = false);
+    void setStartupStatus(const switchu::smi::SystemStatus& status, bool fastReturn = false,
+                          bool startLocked = false);
 #endif
 
     bool onCreate() override;
@@ -306,6 +308,7 @@ private:
     // music and doing its frame work for the whole sleep.
     void enterSystemSleep();
     void leaveSystemSleep();
+    void showLockScreen(bool instant = false);
     void pollSleepNotifications();
     void onUpdateAwake(float dt);
     void closeQuickSettings();
@@ -419,6 +422,8 @@ private:
     std::shared_ptr<AutoThemeScreen>   m_autoThemeScreen;
     std::shared_ptr<ControllerTestScreen> m_controllerTest;
     std::shared_ptr<ProfileCarouselScreen> m_profileCarousel;
+    std::shared_ptr<LockScreen> m_lockScreen;
+    nxui::Widget* m_lockReturnFocus = nullptr;
     std::shared_ptr<TextEntryScreen>      m_textEntry;
 
     nxui::Texture m_gameCardTex;
@@ -494,6 +499,7 @@ private:
     bool m_showWireframe     = false;
     // Console sleep: set by the daemon's sleep notification, cleared on wake.
     bool m_systemAsleep      = false;
+    int  m_sleepRenderFrames = 0;     // frames still drawn (the lock screen) before presentation stops
     bool m_musicWasPlayingBeforeSleep = false;
     bool m_editMode          = false;
     int  m_editSourceIndex   = -1;
@@ -662,6 +668,7 @@ private:
     bool  m_audioInitPending = false;
     bool  m_audioHeldLogged  = false;
     bool m_fastReturnRequested = false;
+    bool m_startLocked = false;          // woke with a game suspended: lock first, then resume it
     std::future<void> m_themePackageTransferFuture;
     std::future<void> m_softwareDeleteFuture;
     Result m_softwareDeleteResult = 0;

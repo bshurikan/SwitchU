@@ -11,6 +11,9 @@
 #include <switch.h>
 #ifdef SWITCHU_MENU
 #include "smi_commands.hpp"
+#include "launcher/AppListLoader.hpp"
+#include "steamgriddb/SteamGridDbManager.hpp"
+#include "steamgriddb/ArtworkCache.hpp"
 #endif
 #include <cstdio>
 #include <cstdlib>
@@ -378,10 +381,12 @@ void WiiUMenuApp::setTutorialStartupFade(bool enabled) {
 }
 
 #ifdef SWITCHU_MENU
-void WiiUMenuApp::setStartupStatus(const switchu::smi::SystemStatus& status, bool fastReturn) {
+void WiiUMenuApp::setStartupStatus(const switchu::smi::SystemStatus& status, bool fastReturn,
+                                   bool startLocked) {
     m_launcher.setStartupStatus(status.suspended_app_id, status.app_running);
     m_startupFailure = status.last_failure;
     m_fastReturnRequested = fastReturn || status.suspended_app_id != 0;
+    m_startLocked = startLocked && status.suspended_app_id != 0;
 }
 #endif
 
@@ -389,6 +394,16 @@ bool WiiUMenuApp::presentInitialFrame(nxui::Renderer& ren) {
 #ifdef SWITCHU_MENU
     if (!m_fastReturnRequested)
         return false;
+
+    if (m_startLocked) {
+        // The lock screen covers everything; do not flash the saved HOME frame.
+        ren.drawRect({0.f, 0.f, 1280.f, 720.f}, nxui::Color(0.f, 0.f, 0.f, 1.f));
+        m_leaveSplashDrawn = true;
+        m_leaveSplashPhase = LeaveSplashPhase::None;
+        m_leaveSplashFade = 0.f;
+        DebugLog::log("[leave] splash skipped: starting on the lock screen");
+        return true;
+    }
 
     LeaveFrameImage image;
     if (LeaveFrameCache::load(m_leaveSession, image) && image.valid()
@@ -478,6 +493,7 @@ bool WiiUMenuApp::hasActiveLeaveCaptureOverlay() const {
         || (m_quickSettings && m_quickSettings->isActive())
         || (m_textEntry && m_textEntry->isActive())
         || (m_progressDialog && m_progressDialog->isActive())
+        || (m_lockScreen && m_lockScreen->isActive())
         || (m_settings && m_settings->isActive())
         || (m_themeShop && m_themeShop->isActive())
         || (m_gameOptions && m_gameOptions->isActive())
@@ -745,11 +761,13 @@ bool WiiUMenuApp::onCreate() {
 
     // Opening the audio session here froze the console when a game was still
     // suspended. Hold it back until the menu has rendered and settled.
-    m_audioInitPending = true;
+    m_audioInitPending = !m_startLocked;
     DebugLog::log("[init] Audio initialisation deferred past the first frames");
 
     DebugLog::log("[init] Bluetooth audio manager deferred until its Settings tab is opened");
     DebugLog::log("[init] Theme Shop HTTP runtime deferred until first request");
+    if (m_startLocked)
+        m_iconStreamer.setPaused(true); // nobody sees HOME: keep GPU memory for the lock screen
 
     DebugLog::log("[init] Config loaded (theme=%s, musicVol=%.2f, sfxVol=%.2f)",
                   m_config.themePreset.c_str(), m_config.musicVolume, m_config.sfxVolume);
@@ -817,6 +835,21 @@ bool WiiUMenuApp::onCreate() {
 
     DebugLog::log("[init] DONE total=%lums fastReturn=%d",
                   initElapsedMs(), fastReturn ? 1 : 0);
+
+#ifdef SWITCHU_MENU
+    // Tell the daemon whether to start us on the lock screen after a wake.
+    {
+        switchu::menu::smi_cmd::setLockScreen(m_config.lockScreenEnabled);
+    }
+    if (m_startLocked) {
+        showLockScreen();
+        if (!m_lockScreen->isActive()) {
+            // Could not show it (option off): do not strand the user on HOME.
+            m_startLocked = false;
+            m_launcher.resumeApplication();
+        }
+    }
+#endif
     return true;
 }
 
@@ -4168,6 +4201,32 @@ void WiiUMenuApp::buildGrid() {
     m_progressDialog->setSmallFont(&m_fontSmall);
     m_progressDialog->setTheme(&m_theme);
 
+    m_lockScreen = std::make_shared<LockScreen>();
+    m_lockScreen->setFonts(&m_fontNormal, &m_fontSmall);
+    m_lockScreen->setTimeFontSource(&app().gpu(), &app().renderer(),
+        m_loadedRegularFontPath.empty() ? std::string(SD_ASSETS) + "/fonts/DejaVuSans.ttf"
+                                        : m_loadedRegularFontPath);
+    m_lockScreen->setTheme(&m_theme);
+    m_lockScreen->setClockService(&m_clockService);
+    m_lockScreen->setUse12HourClock(m_config.clockUse12Hour);
+    m_lockScreen->setOnDismissed([this]() {
+        // The curtain is fully up: hand the focus back to where it was before
+        // sleeping. No GPU wait here, it would stall the frame that reveals HOME.
+        app().setIdleRenderDivider(2);
+        m_audio.playSfx(Sfx::Activate);
+        if (isCurrentFocusableWidget(m_lockReturnFocus))
+            focusManager().setFocus(m_lockReturnFocus);
+        m_lockReturnFocus = nullptr;
+#ifdef SWITCHU_MENU
+        if (m_startLocked) {
+            // We were started by the wake-up with a game suspended: back to it.
+            m_startLocked = false;
+            DebugLog::log("[lock] unlocked -> resuming the suspended game");
+            m_launcher.resumeApplication();
+        }
+#endif
+    });
+
     app().renderer().setBoxWireframeEnabled(m_showWireframe);
 
     wireFocusCallback();
@@ -4345,7 +4404,7 @@ void WiiUMenuApp::buildGrid() {
     m_bgLayer->addChild(m_background);
     m_steamGridDbBackdrop = std::make_shared<SteamGridDbBackdrop>(
         app().gpu(), app().renderer(), &m_threadPool);
-    m_steamGridDbBackdrop->setEnabled(m_config.steamGridDbEnabled);
+    m_steamGridDbBackdrop->setEnabled(m_config.steamGridDbEnabled && !m_startLocked);
     m_steamGridDbBackdrop->setLayoutMode(m_appLayoutMode);
 
     m_contentLayer = std::make_shared<nxui::Box>();
@@ -4474,6 +4533,7 @@ void WiiUMenuApp::buildGrid() {
     m_overlayLayer->addChild(m_dialog);
     m_overlayLayer->addChild(m_progressDialog);
     m_overlayLayer->addChild(m_launchAnim);
+    m_overlayLayer->addChild(m_lockScreen);
     m_overlayLayer->addChild(m_pointerCursor);
 
     root.addChild(m_bgLayer);
@@ -4944,9 +5004,19 @@ void WiiUMenuApp::onUpdate(float dt) {
         // Console is asleep. Application stopped presenting frames, so the only
         // work left is reading the wake notification: the frame work in
         // onUpdateAwake() kept the console warm for the whole sleep otherwise.
+        if (m_sleepRenderFrames > 0) {
+            // Let the lock screen reach the display before frames stop, so the
+            // image kept on screen at wake is the lock screen and not HOME.
+            if (--m_sleepRenderFrames == 0)
+                app().setSleeping(true);
+            return;
+        }
         pollSleepNotifications();
         return;
     }
+
+    if (m_lockScreen)
+        m_lockScreen->tickRelease(dt);
 
     onUpdateAwake(dt);
 }
@@ -4965,6 +5035,19 @@ void WiiUMenuApp::enterSystemSleep() {
         m_audio.pause();
     }
 
+    // Draw the lock screen first and keep presenting for a few frames: the
+    // display holds the last frame it received, which is what shows at wake.
+    if (m_config.lockScreenEnabled)
+        showLockScreen(true);
+    if (m_lockScreen && m_lockScreen->isActive()) {
+        // Presented in black: the panel is already switching off and would flash
+        // the lock screen. The textures are still created, so at wake the lock
+        // screen draws at once and without pop-in.
+        m_lockScreen->setBlackout(true);
+        m_sleepRenderFrames = 3;
+        return;
+    }
+
     // Stop presenting. A loop that keeps submitting frames never lets the
     // console settle into its low-power sleep state.
     app().setSleeping(true);
@@ -4974,6 +5057,9 @@ void WiiUMenuApp::leaveSystemSleep() {
     if (!m_systemAsleep)
         return;
     m_systemAsleep = false;
+    m_sleepRenderFrames = 0;
+    if (m_lockScreen)
+        m_lockScreen->setBlackout(false);
     app().setSleeping(false);
 
     if (m_musicWasPlayingBeforeSleep && m_config.musicEnabled)
@@ -4986,6 +5072,69 @@ void WiiUMenuApp::leaveSystemSleep() {
     m_deferredRefreshFrames = std::max(m_deferredRefreshFrames, 3);
     updateCursor();
     DebugLog::log("[power] console awake: presentation resumed");
+    showLockScreen();
+}
+
+void WiiUMenuApp::showLockScreen(bool instant) {
+    if (!m_lockScreen || !m_config.lockScreenEnabled)
+        return;
+    if (m_lockScreen->isActive()) {
+        // Already drawn before sleeping: just rearm it for the wake.
+        m_lockScreen->rearmInput();
+        m_lockScreen->refreshNow();
+        return;
+    }
+
+    // The default profile if one is set, otherwise the first profile.
+    std::string userName;
+    AccountUid lockedUid{};
+    const bool hasDefault = m_config.defaultProfileEnabled &&
+        hexToAccountUid(m_config.defaultProfileUid, lockedUid);
+    for (const auto& profile : m_profiles) {
+        if (userName.empty())
+            userName = profile.nickname;
+        if (hasDefault && profile.uid.uid[0] == lockedUid.uid[0] &&
+            profile.uid.uid[1] == lockedUid.uid[1]) {
+            userName = profile.nickname;
+            break;
+        }
+    }
+
+    std::string suspendedGame;
+    std::vector<std::uint8_t> gameIcon;
+    std::vector<std::uint8_t> gameHero;
+    if (const auto suspendedId = m_launcher.suspendedTitleId(); suspendedId != 0) {
+        if (const AppEntry* entry = m_model.findByTitleId(suspendedId))
+            suspendedGame = entry->title;
+        // Icon (the custom one if the user set it) and SteamGridDB hero, when present.
+        gameIcon = AppListLoader::loadIconData(suspendedId);
+        if (m_config.steamGridDbEnabled) {
+            auto hero = steamgriddb::artwork::decode(
+                SteamGridDbManager::heroPath(suspendedId), 1280, 720, true);
+            if (hero.width == 1280 && hero.height == 720 && !hero.rgba.empty())
+                gameHero = std::move(hero.rgba);
+        }
+    }
+    m_lockScreen->setGameArt(std::move(gameIcon), std::move(gameHero));
+
+    if (m_consoleBatteryPercent > 0)
+        m_lockScreen->setBatteryStatus(m_consoleBatteryPercent, m_consoleBatteryCharging);
+    m_lockScreen->setUse12HourClock(m_config.clockUse12Hour);
+
+    // Input belongs to the lock screen until it is dismissed.
+    m_lockReturnFocus = focusManager().current();
+    m_lockScreen->setHoldOnUnlock(m_startLocked && !suspendedGame.empty());
+    m_lockScreen->show(userName, suspendedGame, instant);
+    // Nothing moves on this screen except the clock: redraw at 10 Hz when idle.
+    app().setIdleRenderDivider(6);
+    // Started only to lock and hand the game back: HOME is never shown, so do not
+    // update or draw it behind the lock screen.
+    if (m_startLocked && !suspendedGame.empty()) {
+        if (m_bgLayer) m_bgLayer->setVisible(false);
+        if (m_contentLayer) m_contentLayer->setVisible(false);
+    }
+    focusManager().setFocus(m_lockScreen.get());
+    DebugLog::log("[lock] lock screen shown");
 }
 
 void WiiUMenuApp::pollSleepNotifications() {
@@ -5472,6 +5621,8 @@ void WiiUMenuApp::onUpdateAwake(float dt) {
                     m_consoleBatteryPercent = static_cast<int>(percent);
                     m_consoleBatteryCharging = charging;
                     m_battery->setBatteryStatus(percent, charging);
+                    if (m_lockScreen)
+                        m_lockScreen->setBatteryStatus(static_cast<int>(percent), charging);
                     if (m_quickSettings)
                         m_quickSettings->setBatteryStatus(
                             static_cast<int>(percent), charging);
@@ -5696,6 +5847,9 @@ void WiiUMenuApp::onUpdateAwake(float dt) {
 
     if (!debugTouchBlocked && m_progressDialog && m_progressDialog->isActive())
         m_progressDialog->handleTouch(app().input());
+
+    if (!debugTouchBlocked && m_lockScreen && m_lockScreen->isActive())
+        m_lockScreen->handleTouch(app().input());
 
     if (m_dialogWasActive && !dialogActiveNow) {
         if (isCurrentFocusableWidget(m_dialogReturnFocus)) {
@@ -6783,11 +6937,14 @@ void WiiUMenuApp::onRender(nxui::Renderer& ren) {
         m_editGhostIcon->render(ren);
     }
 
-    renderPageArrows(ren);
-    if (m_config.actionHintStyle == "panel")
-        renderActionHintPanel(ren);
-    else
-        renderActionHintBar(ren);
+    // These are drawn above every overlay, so keep them off the lock screen.
+    if (!(m_lockScreen && m_lockScreen->isActive())) {
+        renderPageArrows(ren);
+        if (m_config.actionHintStyle == "panel")
+            renderActionHintPanel(ren);
+        else
+            renderActionHintBar(ren);
+    }
 
 #ifdef SWITCHU_DEBUG_UI
     if (m_debugOverlay) {

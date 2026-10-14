@@ -28,6 +28,21 @@ ThemeShopScreen::Tab themeshop::tabs::OptionsTab::build(ThemeShopScreen& screen)
 
     {
         SettingItem it;
+        it.label = i18n.tr("themeshop.options.lock_screen", "Lock Screen");
+        it.description = i18n.tr("themeshop.options.lock_screen_desc",
+                                 "Show a lock screen when the console wakes from sleep.");
+        it.type = ItemType::Toggle;
+        it.boolVal = screen.m_lockScreenEnabled;
+        it.anim01 = it.boolVal ? 1.f : 0.f;
+        it.onChange = [&screen](SettingItem& self) {
+            screen.m_lockScreenEnabled = self.boolVal;
+            if (screen.m_lockScreenCb) screen.m_lockScreenCb(self.boolVal);
+        };
+        t.items.push_back(std::move(it));
+    }
+
+    {
+        SettingItem it;
         it.label = i18n.tr("settings.music.music_volume", "Music Volume");
         it.type = ItemType::Slider;
         it.floatVal = std::clamp(screen.m_musicVolume, 0.f, 1.f);

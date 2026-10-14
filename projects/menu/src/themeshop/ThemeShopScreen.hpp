@@ -51,6 +51,7 @@ public:
     void onCursorMotionModeChange(IntCb cb) { m_cursorMotionModeCb = std::move(cb); }
     void onPageTransitionModeChange(IntCb cb) { m_pageTransitionModeCb = std::move(cb); }
     void onNextTrack(VoidCb cb)          { m_nextTrackCb = std::move(cb); }
+    void onLockScreenChange(BoolCb cb) { m_lockScreenCb = std::move(cb); }
     void onThemeShopApply(StringCb cb)   { m_themeShopApplyCb = std::move(cb); }
     void onThemeShopDelete(StringCb cb)  { m_themeShopDeleteCb = std::move(cb); }
     void onThemeShopDownload(StringCb cb) { m_themeShopDownloadCb = std::move(cb); }
@@ -72,6 +73,7 @@ public:
     void setActionHintStyleState(const std::string& style) {
         m_actionHintStyle = style == "panel" ? 0 : 1;
     }
+    void setLockScreenState(bool enabled) { m_lockScreenEnabled = enabled; }
     void setAutoThemeSummary(std::string summary) {
         m_autoThemeSummary = std::move(summary);
     }
@@ -221,6 +223,7 @@ private:
     IntCb m_cursorMotionModeCb;
     IntCb m_pageTransitionModeCb;
     VoidCb m_nextTrackCb;
+    BoolCb m_lockScreenCb;
     StringCb m_themeShopApplyCb;
     StringCb m_themeShopDeleteCb;
     StringCb m_themeShopDownloadCb;
@@ -238,6 +241,7 @@ private:
     std::string m_autoThemeSummary;
     int m_cursorMotionMode = 0;
     int m_pageTransitionMode = 0;
+    bool m_lockScreenEnabled = true;
     std::string m_searchQuery;
     std::vector<ThemeShopEntry> m_allThemeShopEntries;
     std::vector<ThemeShopEntry> m_themeShopEntries;

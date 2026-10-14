@@ -3,6 +3,9 @@
 #include "themeshop/ThemeHttp.hpp"
 #include "widgets/GlossyIcon.hpp"
 #include "DebugLog.hpp"
+#ifdef SWITCHU_MENU
+#include "smi_commands.hpp"
+#endif
 
 #include <nxui/core/I18n.hpp>
 #include <switchu/control_cache.hpp>
@@ -1150,8 +1153,8 @@ void WiiUMenuApp::syncSteamGridDb() {
 }
 
 bool WiiUMenuApp::steamGridDbArtworkAllowedHere() const {
-    if (!m_config.steamGridDbEnabled)
-        return false;
+    if (!m_config.steamGridDbEnabled || m_startLocked)
+        return false; // HOME artwork is pointless (and costly) under the lock screen
     if (m_openFolderId != 0)
         return m_config.steamGridDbShowInFolders;
     if (m_appLayoutMode == AppLayoutMode::DynamicLine)
@@ -1546,6 +1549,7 @@ void WiiUMenuApp::createThemeShop() {
     m_themeShop->setSortLargeTilesState(m_config.sortLargeTiles);
     refreshAutoThemeSummary();
     m_themeShop->setCursorMotionModeState(m_config.cursorMotionMode);
+    m_themeShop->setLockScreenState(m_config.lockScreenEnabled);
     m_themeShop->setPageTransitionModeState(m_config.pageTransitionMode);
     m_themeShop->setAccessibilityVoiceEnabled(m_config.accessibilityEnabled);
     m_themeShop->setAccessibilitySpeechPreferences(m_config.accessibilitySpeakHints,
@@ -1600,6 +1604,13 @@ void WiiUMenuApp::createThemeShop() {
         reflowHomeGrid();
     });
     m_themeShop->onAutoThemeOpen([this]() { openAutoThemeSettings(); });
+    m_themeShop->onLockScreenChange([this](bool enabled) {
+        m_config.lockScreenEnabled = enabled;
+        m_config.save();
+#ifdef SWITCHU_MENU
+        switchu::menu::smi_cmd::setLockScreen(enabled);
+#endif
+    });
     m_themeShop->onCursorMotionModeChange([this](int mode) {
         m_config.cursorMotionMode = std::clamp(mode, 0, 1);
         const bool instant = m_config.cursorMotionMode == 1;

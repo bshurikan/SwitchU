@@ -1,4 +1,33 @@
 {
+  "lock": {
+    "enter": "Appuie sur A pour entrer",
+    "hint": "N'importe quel autre bouton, ou un toucher, fonctionne aussi",
+    "game_paused": "en pause",
+    "date_format": "{weekday} {day} {month}",
+    "weekday": {
+      "0": "dimanche",
+      "1": "lundi",
+      "2": "mardi",
+      "3": "mercredi",
+      "4": "jeudi",
+      "5": "vendredi",
+      "6": "samedi"
+    },
+    "month": {
+      "1": "janvier",
+      "2": "février",
+      "3": "mars",
+      "4": "avril",
+      "5": "mai",
+      "6": "juin",
+      "7": "juillet",
+      "8": "août",
+      "9": "septembre",
+      "10": "octobre",
+      "11": "novembre",
+      "12": "décembre"
+    }
+  },
   "common": {
     "auto": "Auto",
     "na": "N/A",
@@ -661,6 +690,8 @@
     },
     "options": {
       "action_hints": "Indications d’action",
+      "lock_screen": "Écran de verrouillage",
+      "lock_screen_desc": "Affiche un écran de verrouillage au réveil de la console.",
       "action_hints_desc": "Choisissez l’apparence des commandes contextuelles en bas à droite.",
       "sort_large_tiles": "Trier aussi les grandes tuiles",
       "sort_large_tiles_desc": "A-Z et Récents déplacent aussi les applications avec une tuile plus grande.",

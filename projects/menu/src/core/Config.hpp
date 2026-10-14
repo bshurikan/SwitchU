@@ -29,6 +29,8 @@ struct AppConfig {
     std::string defaultProfileUid;
     bool  tutorialCompleted = false;
     bool  clockUse12Hour = false;
+    // Show the lock screen when the console wakes from sleep.
+    bool  lockScreenEnabled = true;
     bool  accessibilityEnabled = true;
     bool  accessibilitySpeakHints = true;
     bool  accessibilitySpeakContextEveryFocus = false;

@@ -280,6 +280,7 @@ void IconStreamer::onPageChanged(int currentPage, int iconsPerPage,
 {
     int totalApps  = (int)m_appToSlot.size();
     if (totalApps == 0 || iconsPerPage <= 0) {
+    if (m_paused) return;
         m_lastPage = currentPage;
         m_lastIconsPerPage = iconsPerPage;
         return;
@@ -524,6 +525,7 @@ void IconStreamer::forceReload(int currentPage, int iconsPerPage,
     // state. This is especially visible when an overridden icon is applied
     // while edit/move mode still owns a ghost of the focused application.
     for (const auto& icon : allIcons) {
+    if (m_paused) return;
         if (icon)
             icon->setTexture(nullptr);
     }
@@ -551,6 +553,7 @@ void IconStreamer::reloadTitle(
     uint64_t titleId, int currentPage, int iconsPerPage,
     nxui::GpuDevice& gpu, nxui::Renderer& ren,
     const std::vector<std::shared_ptr<GlossyIcon>>& allIcons) {
+    if (m_paused) return;
     const auto found = std::find(m_titleIds.begin(), m_titleIds.end(), titleId);
     if (found == m_titleIds.end()) return;
     const int appIndex = static_cast<int>(found - m_titleIds.begin());
