@@ -5566,17 +5566,35 @@ void WiiUMenuApp::syncSteamGridDbLogoArea() {
                                        && m_config.steamGridDbShowLogoInDynamicLine);
     const nxui::Rect kCenteredLogo{370.f, 149.f, 540.f, 150.f};
 
-    // Portrait single-row: top-centred logo band (~3× landscape height) under
-    // the applet strip — plenty of tall-canvas room above the carousel.
+    // Portrait single-row: top-centred logo under the applet strip (~2× the
+    // landscape 150px band). With posters, clamp into the gap between the
+    // strip and the focused tile so the logo isn't covered.
     if (m_homeLayout.isPortrait()
         && presentationLayoutMode() == AppLayoutMode::DynamicLine) {
         const float canvasW = m_homeLayout.logicalW();
         constexpr float kEdge = 28.f;
-        constexpr float kLogoH = 450.f; // 3× the 150 landscape band
+        constexpr float kGap = 12.f;
+        constexpr float kLogoH2x = 300.f; // 2× the 150 landscape band
         const float logoW = std::max(80.f, canvasW - kEdge * 2.f);
-        const float logoY = m_homeLayout.portraitSingleRowStripBottomY() + 12.f;
+        const float logoY = m_homeLayout.portraitSingleRowStripBottomY() + kGap;
+        float logoH = kLogoH2x;
+        if (m_grid) {
+            const int focusIdx = m_grid->focusedGlobalIndex();
+            const auto& icons = m_grid->allIcons();
+            const bool posterFocus = focusIdx >= 0
+                && focusIdx < static_cast<int>(icons.size())
+                && icons[static_cast<std::size_t>(focusIdx)]
+                && icons[static_cast<std::size_t>(focusIdx)]->usesPosterFrame();
+            if (posterFocus) {
+                nxui::Rect focus = m_grid->focusedDisplayRect();
+                if (focus.height >= 8.f) {
+                    const float maxH = focus.y - kGap - logoY;
+                    logoH = std::max(48.f, std::min(kLogoH2x, maxH));
+                }
+            }
+        }
         m_steamGridDbBackdrop->setLogoArea(
-            {(canvasW - logoW) * 0.5f, logoY, logoW, kLogoH});
+            {(canvasW - logoW) * 0.5f, logoY, logoW, logoH});
         return;
     }
 
