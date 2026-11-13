@@ -247,12 +247,13 @@ void SidebarManager::setDynamicLineLayout(bool enabled, bool animate) {
         return;
     }
 
-    // Portrait: top-align under the HUD so columns clear the grid/carousel.
-    // Landscape grid: vertically centre (classic HOME).
-    constexpr float kPortraitTopY = 98.f; // kTopHudH (90) + 8
+    // Portrait single-row only: top-align under the HUD so columns clear the
+    // carousel. Portrait grid + landscape keep the classic vertical centre.
+    constexpr float kPortraitSingleRowTopY = 98.f; // kTopHudH (90) + 8
     const float totalH = 3.f * kSidebarButtonSize + 2.f * kSidebarColumnGap;
-    const float startY = portrait ? kPortraitTopY
-                                  : (m_canvasH * 0.5f - totalH * 0.5f);
+    const float startY = (portrait && enabled)
+        ? kPortraitSingleRowTopY
+        : (m_canvasH * 0.5f - totalH * 0.5f);
     const float rightX = m_canvasW - kSidebarMarginX - kSidebarButtonSize;
     for (std::size_t i = 0; i < m_leftButtons.size(); ++i) {
         place(m_leftButtons[i].get(),

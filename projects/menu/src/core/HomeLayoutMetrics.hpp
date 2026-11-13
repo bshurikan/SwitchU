@@ -75,17 +75,21 @@ struct HomeLayoutMetrics {
     float sidebarRightX() const {
         return logicalW() - kSidebarMargin - kSidebarBtn;
     }
-    // Portrait: top-align under the HUD so side icons clear the grid/carousel.
-    // Landscape: vertically centre on the canvas mid (classic HOME).
+    // Classic centre — portrait grid and landscape. Portrait single-row
+    // top-align lives in SidebarManager (enabled && portrait).
     float sidebarStartY() const {
-        if (isPortrait())
-            return kTopHudH + 8.f;
         const float totalH = 3.f * kSidebarBtn + 2.f * kSidebarGap;
         return logicalH() * 0.5f - totalH * 0.5f;
     }
 
     float sidebarBottomY() const {
         return sidebarStartY() + 3.f * kSidebarBtn + 2.f * kSidebarGap;
+    }
+
+    // Portrait page arrows stay parked under the single-row column band even
+    // when grid side icons are vertically centred.
+    float portraitPageArrowParkBottomY() const {
+        return kTopHudH + 8.f + 3.f * kSidebarBtn + 2.f * kSidebarGap;
     }
 
     // Logical → FB. Content is laid CCW into the buffer so nwindow ROT_90/270

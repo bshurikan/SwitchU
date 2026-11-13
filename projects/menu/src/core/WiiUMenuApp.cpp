@@ -698,6 +698,8 @@ LeaveFrameSession WiiUMenuApp::captureLeaveSession() const {
     session.openFolderId = m_openFolderId;
     session.page = m_grid ? m_grid->currentPage() : 0;
     session.focusTitleId = 0;
+    session.appLayoutMode = static_cast<std::uint32_t>(m_appLayoutMode);
+    session.homeOrientation = static_cast<std::uint32_t>(m_config.homeOrientation);
 
     // Prefer the launching title stamped by scheduleLeaveCapture — focusManager
     // can still briefly report the previous icon after a fast hop.
@@ -5524,11 +5526,8 @@ void WiiUMenuApp::placeFolderHeader(const nxui::Rect& panel) {
     // grid pushes the title up instead of sliding the panel under it.
     // Keep below the top HUD clock band when chrome is visible.
     const float minY = (m_topHud && m_topHud->isVisible()) ? 88.f : kFolderHeaderMinY;
-    m_folderHeaderRest.y = std::max(minY,
-        panel.y - kFolderHeaderGap - m_folderHeaderRest.height);
     // Landscape single-row: left so it does not cover clock / Change View /
-    // a Poster. Portrait single-row + grid: centred (grid title position)
-    // so the label clears the focused carousel tile.
+    // a Poster. Portrait single-row + grid: centred.
     if (m_appLayoutMode == AppLayoutMode::DynamicLine && !m_homeLayout.isPortrait()) {
         m_folderHeaderRest.x = panel.x + 12.f;
         m_folderHeaderRest.width = 300.f;
@@ -5536,6 +5535,21 @@ void WiiUMenuApp::placeFolderHeader(const nxui::Rect& panel) {
         const float canvasW = m_homeLayout.logicalW();
         m_folderHeaderRest.width = std::min(460.f, canvasW - 48.f);
         m_folderHeaderRest.x = (canvasW - m_folderHeaderRest.width) * 0.5f;
+    }
+
+    if (m_appLayoutMode == AppLayoutMode::DynamicLine && m_homeLayout.isPortrait()
+        && m_grid) {
+        // Sit just above the focused carousel tile (panel hug can put the
+        // label over a tall poster mid-screen).
+        nxui::Rect focus = m_grid->focusedDisplayRect();
+        if (focus.width < 8.f || focus.height < 8.f)
+            focus = {panel.x, panel.y, panel.width, panel.height};
+        constexpr float kAboveFocusGap = 12.f;
+        m_folderHeaderRest.y = std::max(
+            minY, focus.y - kAboveFocusGap - m_folderHeaderRest.height);
+    } else {
+        m_folderHeaderRest.y = std::max(
+            minY, panel.y - kFolderHeaderGap - m_folderHeaderRest.height);
     }
     syncFolderHeader();
     syncSteamGridDbLogoArea();
@@ -5730,21 +5744,44 @@ void WiiUMenuApp::resumeSuspendedApplication(std::uint64_t titleId,
                                              const std::string& launchTitle) {
     if (titleId == 0 || !m_launchAnim)
         return;
-    // Keep the splash captured at the original launch. Recapturing on resume
-    // (tile or HOME) often mismatches — folder closed, page changed, or the
-    // post-return HOME scene is not the launch view.
+
+    auto finishResume = [this, titleId, launchTitle]() {
+        reclaimForFrameTapLaunch("resume");
+        m_audio.playSfx(Sfx::LaunchGame);
+        m_launchAnim->startResume([this, titleId, launchTitle]() {
+            m_config.noteOpened(titleId);
+            m_config.save();
+            m_widgetStore.recordLaunch(titleId, launchTitle,
+                static_cast<std::int64_t>(std::time(nullptr)));
+            m_widgetStore.save();
+            m_launcher.resumeApplication();
+        });
+    };
+
+    // Default: reuse the launch splash. If the user flipped grid↔single-row
+    // or orientation while the title was suspended, that frame no longer
+    // matches HOME — capture a fresh one before resume.
+    LeaveFrameSession cached{};
+    const bool haveCached = LeaveFrameCache::loadSessionOnly(cached);
+    const bool chromeChanged = !haveCached
+        || cached.appLayoutMode != static_cast<std::uint32_t>(m_appLayoutMode)
+        || cached.homeOrientation
+            != static_cast<std::uint32_t>(m_config.homeOrientation);
+    if (chromeChanged) {
+        DebugLog::log(
+            "[leave] recapture on resume tid=%016lX layout=%u→%u orient=%u→%u",
+            static_cast<unsigned long>(titleId),
+            haveCached ? cached.appLayoutMode : 0u,
+            static_cast<unsigned>(m_appLayoutMode),
+            haveCached ? cached.homeOrientation : 0u,
+            static_cast<unsigned>(m_config.homeOrientation));
+        scheduleLeaveCapture(std::move(finishResume), titleId);
+        return;
+    }
+
     DebugLog::log("[leave] skip capture on resume tid=%016lX",
                   static_cast<unsigned long>(titleId));
-    reclaimForFrameTapLaunch("resume");
-    m_audio.playSfx(Sfx::LaunchGame);
-    m_launchAnim->startResume([this, titleId, launchTitle]() {
-        m_config.noteOpened(titleId);
-        m_config.save();
-        m_widgetStore.recordLaunch(titleId, launchTitle,
-            static_cast<std::int64_t>(std::time(nullptr)));
-        m_widgetStore.save();
-        m_launcher.resumeApplication();
-    });
+    finishResume();
 }
 
 void WiiUMenuApp::activateApplication(GlossyIcon* source, AppEntry* entry,
@@ -8966,6 +9003,12 @@ void WiiUMenuApp::onUpdateAwake(float dt) {
                 m_backdropSyncValid = true;
                 m_backdropSyncSec = 0.f;
                 showFocusedSteamGridDbArtwork();
+                // Portrait folder single-row: keep the title parked above the
+                // focused tile as the carousel moves.
+                if (m_openFolderId != 0
+                    && m_appLayoutMode == AppLayoutMode::DynamicLine
+                    && m_homeLayout.isPortrait())
+                    placeFolderHeader(folderPanelRect());
             }
         } else {
             m_backdropSyncValid = false;
@@ -10386,7 +10429,8 @@ nxui::Rect WiiUMenuApp::pageArrowRect(bool left) {
         // they clear both the grid and the peripheral titles.
         constexpr float kEdgeInset = 36.f;
         const float cx = left ? kEdgeInset : canvasW - kEdgeInset;
-        const float cy = m_homeLayout.sidebarBottomY() + 18.f + kPageArrowH * 0.5f;
+        const float cy = m_homeLayout.portraitPageArrowParkBottomY()
+            + 18.f + kPageArrowH * 0.5f;
         return {cx - kPageArrowW * 0.5f, cy - kPageArrowH * 0.5f, kPageArrowW, kPageArrowH};
     }
     const float cx = left ? kPageArrowInset : canvasW - kPageArrowInset;
