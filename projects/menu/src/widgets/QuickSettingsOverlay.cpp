@@ -2347,9 +2347,13 @@ nxui::Rect QuickSettingsOverlay::computeCoverFsProgressTrackRect() const {
 
 nxui::Rect QuickSettingsOverlay::computeCoverFsPlaylistRect() const {
     nxui::Rect card = computeCoverFsCardRect();
-    // Full-height sheet slides up from under the player card (like the QS side sheet).
+    // Sheet slides up from under the player card (like the QS side sheet).
     const float topPad = kCoverFsCardBottomPad;
-    const float maxH = std::max(80.f, card.y - topPad);
+    float maxH = std::max(80.f, card.y - topPad);
+    // Portrait has a very tall gap above the card — cap the sheet so we don't
+    // drive a ~1000px clip/list every frame (was a multi-hundred-ms render spike).
+    if (m_canvasH > m_canvasW + 0.5f)
+        maxH = std::min(maxH, m_canvasH * 0.55f);
     const float eased = nxui::Easing::outCubic(m_coverFsPlaylistAnim);
     const float overlap = 18.f; // tuck under card so bottom rounding is hidden
     const float y = card.y - maxH * eased;
@@ -3593,8 +3597,15 @@ void QuickSettingsOverlay::render(nxui::Renderer& ren) {
                 ren.copyOffscreen(0, kCoverFsBlurTarget);
                 m_coverFsBlurCached = true;
             }
-            ren.drawOffscreen(kCoverFsBlurTarget, {0.f, 0.f, sw, sh},
-                              nxui::Color(1.f, 1.f, 1.f, alpha));
+            // Portrait: map the FB-sized blur capture through the projection
+            // (same helper leave-splash / folder frost use). Landscape can
+            // stretch the half-res capture across the logical screen directly.
+            if (portraitFs)
+                ren.drawOffscreenFramebufferCover(
+                    kCoverFsBlurTarget, nxui::Color(1.f, 1.f, 1.f, alpha));
+            else
+                ren.drawOffscreen(kCoverFsBlurTarget, {0.f, 0.f, sw, sh},
+                                  nxui::Color(1.f, 1.f, 1.f, alpha));
             ren.drawRect({0.f, 0.f, sw, sh},
                          nxui::Color(0.f, 0.f, 0.f, 0.22f * alpha));
         } else {

@@ -614,10 +614,15 @@ void Renderer::drawOffscreenRounded(int target, const Rect& dest, float radius, 
     if (target < 0 || target >= GpuDevice::NUM_OFFSCREEN) return;
     useShader(ShaderProgram::Backdrop);
     bindTexture(m_offDescSlot[target]);
-    const Rect uv{dest.x / static_cast<float>(m_gpu.width()),
-                  dest.y / static_cast<float>(m_gpu.height()),
-                  dest.width / static_cast<float>(m_gpu.width()),
-                  dest.height / static_cast<float>(m_gpu.height())};
+    // Offscreen captures are FB-sized. In portrait, `dest` is logical — map to
+    // the FB AABB before building UVs so we never sample v>1 (that glitched the
+    // QS cover-FS frosted card / playlist on Flip-Grip).
+    const float fbW = static_cast<float>(m_gpu.width());
+    const float fbH = static_cast<float>(m_gpu.height());
+    const Rect fbDest = (m_layoutOrientation == DisplayOrientation::Landscape0)
+        ? dest : layoutClipToFramebuffer(dest);
+    const Rect uv{fbDest.x / fbW, fbDest.y / fbH,
+                  fbDest.width / fbW, fbDest.height / fbH};
     if (radius > 0.f) {
         drawRoundedMasked(dest,
                           std::min(radius, std::min(dest.width, dest.height) * 0.5f),
