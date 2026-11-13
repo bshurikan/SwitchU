@@ -218,26 +218,34 @@ void SidebarManager::setDynamicLineLayout(bool enabled, bool animate) {
                       static_cast<float>(order) * kSidebarGlideStagger);
     };
 
-    // Portrait single-row keeps the grid-style side columns — the top strip
-    // collides with clock / orientation / battery on a 720-wide HUD.
+    // Landscape single-row: strip between profile and titles (classic).
+    // Portrait single-row: own row under the HUD — 3 left + 3 right groups
+    // (avoids colliding with clock / orientation / battery).
     const bool portrait = m_canvasH > m_canvasW + 0.5f;
-    const bool topStrip = enabled && !portrait;
-    if (topStrip) {
-        // Strip X positions scale with canvas width so ultra-wide still fits.
-        const float scaleX = m_canvasW / 1280.f;
-        const float leftGroupX = kDynamicLeftGroupX * scaleX;
-        const float rightGroupX = kDynamicRightGroupX * scaleX;
+    if (enabled) {
+        const float btn = kDynamicStripButtonSize;
+        const float gap = kDynamicStripGap;
+        const float stripY = portrait ? 98.f /* kTopHudH+8 */ : kDynamicStripY;
+        float leftGroupX = kDynamicLeftGroupX;
+        float rightGroupX = kDynamicRightGroupX;
+        if (portrait) {
+            // Pin groups to the side margins on the tall canvas.
+            leftGroupX = kSidebarMarginX;
+            rightGroupX = m_canvasW - kSidebarMarginX
+                - (3.f * btn + 2.f * gap);
+        } else {
+            const float scaleX = m_canvasW / 1280.f;
+            leftGroupX *= scaleX;
+            rightGroupX *= scaleX;
+        }
         for (std::size_t i = 0; i < ordered.size(); ++i) {
             auto* button = ordered[i];
             const bool rightGroup = i >= m_leftButtons.size();
             const std::size_t groupIndex = rightGroup ? i - m_leftButtons.size() : i;
             const float groupX = rightGroup ? rightGroupX : leftGroupX;
             place(button,
-                  {groupX + static_cast<float>(groupIndex) *
-                                (kDynamicStripButtonSize + kDynamicStripGap),
-                   kDynamicStripY,
-                   kDynamicStripButtonSize,
-                   kDynamicStripButtonSize},
+                  {groupX + static_cast<float>(groupIndex) * (btn + gap),
+                   stripY, btn, btn},
                   static_cast<int>(groupIndex));
             button->setCustomNavigation(nxui::FocusDirection::LEFT,
                                         i > 0 ? ordered[i - 1] : button);
@@ -247,13 +255,9 @@ void SidebarManager::setDynamicLineLayout(bool enabled, bool animate) {
         return;
     }
 
-    // Portrait single-row only: top-align under the HUD so columns clear the
-    // carousel. Portrait grid + landscape keep the classic vertical centre.
-    constexpr float kPortraitSingleRowTopY = 98.f; // kTopHudH (90) + 8
+    // Grid (portrait + landscape): classic vertical side columns, centred.
     const float totalH = 3.f * kSidebarButtonSize + 2.f * kSidebarColumnGap;
-    const float startY = (portrait && enabled)
-        ? kPortraitSingleRowTopY
-        : (m_canvasH * 0.5f - totalH * 0.5f);
+    const float startY = m_canvasH * 0.5f - totalH * 0.5f;
     const float rightX = m_canvasW - kSidebarMarginX - kSidebarButtonSize;
     for (std::size_t i = 0; i < m_leftButtons.size(); ++i) {
         place(m_leftButtons[i].get(),

@@ -1532,7 +1532,9 @@ nxui::Rect WiiUMenuApp::homeGridRect() const {
             return kFolderGridRect;
         return {kGridRectX, kGridRectY, kGridRectW, kGridRectH};
     }
-    return m_homeLayout.gridBand(m_openFolderId != 0);
+    const bool singleRowStrip = m_appLayoutMode == AppLayoutMode::DynamicLine
+        && m_openFolderId == 0;
+    return m_homeLayout.gridBand(m_openFolderId != 0, singleRowStrip);
 }
 
 void WiiUMenuApp::reflowHomeShell() {
@@ -5436,8 +5438,13 @@ void WiiUMenuApp::openCapturedFolder() {
         endForcedCursorTeleport();
     }
     // The title lands just after the panel has reached its top edge.
+    // Portrait single-row hides the folder title (placeFolderHeader no-ops it).
     placeFolderHeader(folderPanelRect());
-    if (zoom) {
+    const bool hideFolderTitle = m_appLayoutMode == AppLayoutMode::DynamicLine
+        && m_homeLayout.isPortrait();
+    if (hideFolderTitle) {
+        m_folderHeaderAnim.setImmediate(0.f);
+    } else if (zoom) {
         m_folderHeaderAnim.setImmediate(0.f);
         m_folderHeaderAnim.set(1.f, 0.30f, nxui::Easing::outCubic, 0.16f);
     } else {
@@ -5483,7 +5490,8 @@ void WiiUMenuApp::refreshOpenFolderChrome() {
         m_folderHeaderLabel->setTextColor(m_homeChrome.textPrimary);
     }
     placeFolderHeader(panel);
-    m_folderHeaderAnim.setImmediate(1.f);
+    if (!(m_appLayoutMode == AppLayoutMode::DynamicLine && m_homeLayout.isPortrait()))
+        m_folderHeaderAnim.setImmediate(1.f);
     syncFolderHeader();
     DebugLog::log("[folders] chrome refreshed id=%u name=%s headerY=%.0f",
                   m_openFolderId, folder->name.c_str(), m_folderHeaderRest.y);
@@ -5522,13 +5530,22 @@ nxui::Rect WiiUMenuApp::folderPanelRect() const {
 }
 
 void WiiUMenuApp::placeFolderHeader(const nxui::Rect& panel) {
+    // Portrait single-row: hide the folder title — it fights the carousel /
+    // logo on the tall canvas.
+    if (m_appLayoutMode == AppLayoutMode::DynamicLine && m_homeLayout.isPortrait()) {
+        m_folderHeaderAnim.setImmediate(0.f);
+        syncFolderHeader();
+        syncSteamGridDbLogoArea();
+        return;
+    }
+
     // Anchored to the panel rather than the screen, so the largest folder
     // grid pushes the title up instead of sliding the panel under it.
     // Keep below the top HUD clock band when chrome is visible.
     const float minY = (m_topHud && m_topHud->isVisible()) ? 88.f : kFolderHeaderMinY;
     // Landscape single-row: left so it does not cover clock / Change View /
-    // a Poster. Portrait single-row + grid: centred.
-    if (m_appLayoutMode == AppLayoutMode::DynamicLine && !m_homeLayout.isPortrait()) {
+    // a Poster. Grid: centred.
+    if (m_appLayoutMode == AppLayoutMode::DynamicLine) {
         m_folderHeaderRest.x = panel.x + 12.f;
         m_folderHeaderRest.width = 300.f;
     } else {
@@ -5536,21 +5553,8 @@ void WiiUMenuApp::placeFolderHeader(const nxui::Rect& panel) {
         m_folderHeaderRest.width = std::min(460.f, canvasW - 48.f);
         m_folderHeaderRest.x = (canvasW - m_folderHeaderRest.width) * 0.5f;
     }
-
-    if (m_appLayoutMode == AppLayoutMode::DynamicLine && m_homeLayout.isPortrait()
-        && m_grid) {
-        // Sit just above the focused carousel tile (panel hug can put the
-        // label over a tall poster mid-screen).
-        nxui::Rect focus = m_grid->focusedDisplayRect();
-        if (focus.width < 8.f || focus.height < 8.f)
-            focus = {panel.x, panel.y, panel.width, panel.height};
-        constexpr float kAboveFocusGap = 12.f;
-        m_folderHeaderRest.y = std::max(
-            minY, focus.y - kAboveFocusGap - m_folderHeaderRest.height);
-    } else {
-        m_folderHeaderRest.y = std::max(
-            minY, panel.y - kFolderHeaderGap - m_folderHeaderRest.height);
-    }
+    m_folderHeaderRest.y = std::max(
+        minY, panel.y - kFolderHeaderGap - m_folderHeaderRest.height);
     syncFolderHeader();
     syncSteamGridDbLogoArea();
 }
@@ -5560,9 +5564,24 @@ void WiiUMenuApp::syncSteamGridDbLogoArea() {
         return;
     m_steamGridDbBackdrop->setShowLogo(m_config.steamGridDbEnabled
                                        && m_config.steamGridDbShowLogoInDynamicLine);
-    // Single-row: left gutter only when the focused tile is a tall poster.
-    // Square icons keep the original centred logo band above the carousel.
     const nxui::Rect kCenteredLogo{370.f, 149.f, 540.f, 150.f};
+
+    // Portrait single-row: top-centred logo band (~3× landscape height) under
+    // the applet strip — plenty of tall-canvas room above the carousel.
+    if (m_homeLayout.isPortrait()
+        && presentationLayoutMode() == AppLayoutMode::DynamicLine) {
+        const float canvasW = m_homeLayout.logicalW();
+        constexpr float kEdge = 28.f;
+        constexpr float kLogoH = 450.f; // 3× the 150 landscape band
+        const float logoW = std::max(80.f, canvasW - kEdge * 2.f);
+        const float logoY = m_homeLayout.portraitSingleRowStripBottomY() + 12.f;
+        m_steamGridDbBackdrop->setLogoArea(
+            {(canvasW - logoW) * 0.5f, logoY, logoW, kLogoH});
+        return;
+    }
+
+    // Landscape single-row: left gutter only when the focused tile is a tall
+    // poster. Square icons keep the original centred logo band.
     if (presentationLayoutMode() == AppLayoutMode::DynamicLine && m_grid) {
         const int focusIdx = m_grid->focusedGlobalIndex();
         const auto& icons = m_grid->allIcons();
@@ -9003,12 +9022,6 @@ void WiiUMenuApp::onUpdateAwake(float dt) {
                 m_backdropSyncValid = true;
                 m_backdropSyncSec = 0.f;
                 showFocusedSteamGridDbArtwork();
-                // Portrait folder single-row: keep the title parked above the
-                // focused tile as the carousel moves.
-                if (m_openFolderId != 0
-                    && m_appLayoutMode == AppLayoutMode::DynamicLine
-                    && m_homeLayout.isPortrait())
-                    placeFolderHeader(folderPanelRect());
             }
         } else {
             m_backdropSyncValid = false;
@@ -10424,13 +10437,36 @@ bool WiiUMenuApp::pagingAvailable() {
 
 nxui::Rect WiiUMenuApp::pageArrowRect(bool left) {
     const float canvasW = m_homeLayout.logicalW();
+    const float canvasH = m_homeLayout.logicalH();
     if (m_homeLayout.isPortrait()) {
-        // Edge-aligned, parked under the top-aligned side icon columns so
-        // they clear both the grid and the peripheral titles.
-        constexpr float kEdgeInset = 36.f;
-        const float cx = left ? kEdgeInset : canvasW - kEdgeInset;
-        const float cy = m_homeLayout.portraitPageArrowParkBottomY()
-            + 18.f + kPageArrowH * 0.5f;
+        // Sit in the side gutter mid-X (between screen edge and grid/folder
+        // plate). Home grid: below the centred side-icon columns. Folders
+        // (no side icons): vertically centred on the plate.
+        float contentLeft = m_homeLayout.gridSafeSideMargin();
+        float contentRight = canvasW - contentLeft;
+        float contentMidY = canvasH * 0.5f;
+        if (m_openFolderId != 0) {
+            const nxui::Rect panel = folderPanelRect();
+            contentLeft = panel.x;
+            contentRight = panel.x + panel.width;
+            contentMidY = panel.y + panel.height * 0.5f;
+        } else if (m_grid) {
+            const nxui::Rect content = m_grid->contentRect();
+            if (content.width > 8.f) {
+                contentLeft = content.x;
+                contentRight = content.x + content.width;
+            }
+        }
+
+        const float leftGutterMid = contentLeft * 0.5f;
+        const float rightGutterMid = (contentRight + canvasW) * 0.5f;
+        const float cx = left ? leftGutterMid : rightGutterMid;
+
+        // Folders: vertically mid on the plate. Home grid: just under the
+        // centred side-icon columns (not beside them).
+        const float cy = (m_openFolderId != 0)
+            ? contentMidY
+            : (m_homeLayout.sidebarBottomY() + 18.f + kPageArrowH * 0.5f);
         return {cx - kPageArrowW * 0.5f, cy - kPageArrowH * 0.5f, kPageArrowW, kPageArrowH};
     }
     const float cx = left ? kPageArrowInset : canvasW - kPageArrowInset;

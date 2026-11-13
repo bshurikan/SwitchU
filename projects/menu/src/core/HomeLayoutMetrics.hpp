@@ -53,13 +53,23 @@ struct HomeLayoutMetrics {
 
     // Vertically center on the canvas mid (same as sidebars), clipped to the
     // HUD / page-indicator safe area so the grid mid matches the side buttons.
-    nxui::Rect gridBand(bool inFolder = false) const {
-        const float hardTop = inFolder ? 148.f : kTopHudH;
+    // singleRowStrip: portrait single-row reserves a row under the HUD for the
+    // horizontal applet strip (56px + gaps).
+    nxui::Rect gridBand(bool inFolder = false, bool singleRowStrip = false) const {
+        float hardTop = inFolder ? 148.f : kTopHudH;
+        if (singleRowStrip && !inFolder)
+            hardTop = kTopHudH + 8.f + 56.f + 10.f; // strip under HUD
         const float hardBottom = pageIndicator().y;
         const float mid = logicalH() * 0.5f;
         const float half = std::min(mid - hardTop, hardBottom - mid);
         const float top = mid - half;
         return {0.f, top, logicalW(), std::max(1.f, half * 2.f)};
+    }
+
+    // Portrait single-row applet strip (under HUD).
+    float portraitSingleRowStripY() const { return kTopHudH + 8.f; }
+    float portraitSingleRowStripBottomY() const {
+        return portraitSingleRowStripY() + 56.f;
     }
 
     // Full logical canvas — wallpaper / wara-wara best-fit area.
@@ -84,12 +94,6 @@ struct HomeLayoutMetrics {
 
     float sidebarBottomY() const {
         return sidebarStartY() + 3.f * kSidebarBtn + 2.f * kSidebarGap;
-    }
-
-    // Portrait page arrows stay parked under the single-row column band even
-    // when grid side icons are vertically centred.
-    float portraitPageArrowParkBottomY() const {
-        return kTopHudH + 8.f + 3.f * kSidebarBtn + 2.f * kSidebarGap;
     }
 
     // Logical → FB. Content is laid CCW into the buffer so nwindow ROT_90/270
