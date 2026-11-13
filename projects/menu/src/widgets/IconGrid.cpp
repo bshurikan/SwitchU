@@ -502,7 +502,10 @@ nxui::Rect IconGrid::dynamicIconRect(int index, float* outScale,
     const float w = baseCellW * s;
     const float h = baseCellH * s;
     float centerY = lineCenterY;
-    if (poster && focusBlend > 0.f) {
+    // Landscape: focused posters rise toward screen mid. Portrait: keep the
+    // same baseline as neighbours so the carousel stays level.
+    const bool portraitLine = m_rect.height > m_rect.width + 0.5f;
+    if (poster && focusBlend > 0.f && !portraitLine) {
         // Clear the clock capsule (~y 70) and leave room for the title pill.
         constexpr float kTopPad = 100.f;
         constexpr float kBottomPad = 128.f;
@@ -898,11 +901,12 @@ void IconGrid::renderPageAt(nxui::Renderer& ren, int page, float dx) {
 }
 
 void IconGrid::renderDynamicLine(nxui::Renderer& ren) {
-    // Focused Posters rise above the grid band for vertical centering — clip to
-    // the full layout height so their tops (and rounded corners) are not sheared.
+    // Focused Posters may rise above the grid band (landscape) — clip to the
+    // full layout height so their tops (and rounded corners) are not sheared.
     nxui::Rect clip = m_rect;
     clip.y = 0.f;
-    clip.height = std::max(m_rect.bottom(), 720.f);
+    const float layoutH = m_rect.height > m_rect.width + 0.5f ? 1280.f : 720.f;
+    clip.height = std::max(m_rect.bottom(), layoutH);
     ren.pushClipRect(clip);
 
     // The focused index is a linear scan over every icon. Reading it inside the
