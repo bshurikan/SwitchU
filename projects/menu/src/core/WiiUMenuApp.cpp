@@ -1580,7 +1580,8 @@ void WiiUMenuApp::reflowHomeShell() {
             m_bgLayer->setRect({0.f, 0.f, lw, lh});
         if (m_contentLayer)
             m_contentLayer->setRect({0.f, 0.f, lw, lh});
-        // Overlays stay landscape FB — Settings/Theme Shop deferred.
+        if (m_overlayLayer)
+            m_overlayLayer->setRect({0.f, 0.f, lw, lh});
         if (m_folderBackdrop)
             m_folderBackdrop->setRect({0.f, 0.f, lw, lh});
         if (m_folderZoom)
@@ -1603,6 +1604,18 @@ void WiiUMenuApp::reflowHomeShell() {
         m_sidebar.setCanvasSize(lw, lh);
     }
 
+    // Dialogs / lock / launch / context menus use logical canvas bounds.
+    const float canvasW = portrait ? lw : 1280.f;
+    const float canvasH = portrait ? lh : 720.f;
+    if (m_dialog) m_dialog->setCanvasSize(canvasW, canvasH);
+    if (m_userSelect) m_userSelect->setCanvasSize(canvasW, canvasH);
+    if (m_contextMenu) m_contextMenu->setCanvasSize(canvasW, canvasH);
+    if (m_progressDialog) m_progressDialog->setCanvasSize(canvasW, canvasH);
+    if (m_lockScreen) m_lockScreen->setCanvasSize(canvasW, canvasH);
+    if (m_launchAnim) m_launchAnim->setCanvasSize(canvasW, canvasH);
+    if (m_folderBackdrop) m_folderBackdrop->setCanvasSize(canvasW, canvasH);
+
+    // Portrait single-row keeps side columns (SidebarManager skips the top strip).
     const bool dynamicLine = m_appLayoutMode == AppLayoutMode::DynamicLine
         && m_openFolderId == 0;
     m_sidebar.setDynamicLineLayout(dynamicLine);
@@ -1610,10 +1623,11 @@ void WiiUMenuApp::reflowHomeShell() {
 
     if (m_grid) {
         m_grid->setRect(homeGridRect());
-        if (m_openFolderId == 0
-            && m_appLayoutMode != AppLayoutMode::DynamicLine) {
-            const int cols = activeGridColumns();
-            const int rows = activeGridRows();
+        if (m_appLayoutMode != AppLayoutMode::DynamicLine) {
+            int cols = activeGridColumns();
+            int rows = activeGridRows();
+            if (m_openFolderId != 0)
+                std::tie(cols, rows) = folderViewDimensions(m_openFolderId);
             const GridLayoutMetrics metrics =
                 computeGridLayoutMetrics(cols, rows);
             m_grid->reconfigureLayout(cols, rows,
@@ -1766,7 +1780,9 @@ void WiiUMenuApp::wireProfileLockNavigation() {
     if (!m_profileLock)
         return;
     auto* lock = m_profileLock.get();
-    const bool dynamicLine = m_appLayoutMode == AppLayoutMode::DynamicLine;
+    // Portrait single-row uses side columns — treat nav like grid chrome.
+    const bool lineStrip = m_appLayoutMode == AppLayoutMode::DynamicLine
+        && !m_homeLayout.isPortrait();
     const auto& leftButtons = m_sidebar.leftButtons();
     const auto& rightButtons = m_sidebar.rightButtons();
     auto* flip = (m_layoutFlip && m_layoutFlip->isVisible()) ? m_layoutFlip.get() : nullptr;
@@ -1802,7 +1818,7 @@ void WiiUMenuApp::wireProfileLockNavigation() {
     wireLayoutFlipNavigation();
     wireOrientationButtonNavigation();
 
-    if (dynamicLine) {
+    if (lineStrip) {
         // Strip: [profile] → [left…] → [orient?] → [flip] → [right…] → [battery]
         nxui::Widget* lockRight = firstLeft
             ? firstLeft
@@ -1984,10 +2000,13 @@ WiiUMenuApp::GridLayoutMetrics WiiUMenuApp::computeGridLayoutMetrics(int cols,
     const float scale = std::min(1.f, std::min(scaleW, scaleH));
 
     GridLayoutMetrics m;
-    m.cellW = std::max(88.f, kGridBaseCellW * scale);
-    m.cellH = std::max(88.f, kGridBaseCellH * scale);
-    m.padX = std::max(8.f, kGridBasePadX * scale);
-    m.padY = std::max(8.f, kGridBasePadY * scale);
+    // Portrait folders / grids need smaller floors so 3×N fits in ~520px width.
+    const float minCell = m_homeLayout.isPortrait() ? 72.f : 88.f;
+    const float minPad = m_homeLayout.isPortrait() ? 6.f : 8.f;
+    m.cellW = std::max(minCell, kGridBaseCellW * scale);
+    m.cellH = std::max(minCell, kGridBaseCellH * scale);
+    m.padX = std::max(minPad, kGridBasePadX * scale);
+    m.padY = std::max(minPad, kGridBasePadY * scale);
     return m;
 }
 
@@ -1999,6 +2018,17 @@ std::pair<int, int> WiiUMenuApp::folderGridDimensions(std::uint32_t folderId) co
         case 2: return {6, 4};
         default: return {5, 3};
     }
+}
+
+std::pair<int, int> WiiUMenuApp::folderViewDimensions(std::uint32_t folderId) const {
+    const auto stored = folderGridDimensions(folderId);
+    if (!m_homeLayout.isPortrait())
+        return stored;
+    // Mirror HOME: landscape 4×2 / 5×3 / 6×4 → portrait 3×N (same tile budget).
+    const int tiles = std::max(1, stored.first * stored.second);
+    constexpr int kPortraitCols = 3;
+    const int rows = std::max(2, (tiles + kPortraitCols - 1) / kPortraitCols);
+    return {kPortraitCols, rows};
 }
 
 void WiiUMenuApp::reflowHomeGrid() {
@@ -2930,7 +2960,7 @@ void WiiUMenuApp::completeDisplayModelApply(
     int columns = activeGridColumns();
     int rows = activeGridRows();
     if (m_openFolderId != 0)
-        std::tie(columns, rows) = folderGridDimensions(m_openFolderId);
+        std::tie(columns, rows) = folderViewDimensions(m_openFolderId);
     auto metrics = computeGridLayoutMetrics(columns, rows);
     if (m_openFolderId != 0) {
         // Reserve a real title band above and a title-pill band below. Scaling
@@ -4641,7 +4671,7 @@ void WiiUMenuApp::layoutPrefetchWindow(int& page, int& pageSize) const {
             int cols = std::clamp(m_config.gridColumns, 1, 8);
             int rows = std::clamp(m_config.gridRows, 1, 5);
             if (m_openFolderId != 0)
-                std::tie(cols, rows) = folderGridDimensions(m_openFolderId);
+                std::tie(cols, rows) = folderViewDimensions(m_openFolderId);
             pageSize = std::max(1, cols * rows);
             const int focus = std::max(0, m_grid->focusedGlobalIndex());
             page = focus / pageSize;
@@ -4846,7 +4876,7 @@ bool WiiUMenuApp::tryCommitInPlaceLayoutMorph(std::uint64_t focused) {
     int columns = activeGridColumns();
     int rows = activeGridRows();
     if (m_openFolderId != 0)
-        std::tie(columns, rows) = folderGridDimensions(m_openFolderId);
+        std::tie(columns, rows) = folderViewDimensions(m_openFolderId);
     auto metrics = computeGridLayoutMetrics(columns, rows);
     if (m_openFolderId != 0) {
         metrics.cellW *= 0.92f;
@@ -5495,8 +5525,9 @@ void WiiUMenuApp::placeFolderHeader(const nxui::Rect& panel) {
         m_folderHeaderRest.x = panel.x + 12.f;
         m_folderHeaderRest.width = 300.f;
     } else {
-        m_folderHeaderRest.x = 410.f;
-        m_folderHeaderRest.width = 460.f;
+        const float canvasW = m_homeLayout.logicalW();
+        m_folderHeaderRest.width = std::min(460.f, canvasW - 48.f);
+        m_folderHeaderRest.x = (canvasW - m_folderHeaderRest.width) * 0.5f;
     }
     syncFolderHeader();
     syncSteamGridDbLogoArea();
@@ -10341,7 +10372,8 @@ bool WiiUMenuApp::pagingAvailable() {
 }
 
 nxui::Rect WiiUMenuApp::pageArrowRect(bool left) {
-    const float cx = left ? kPageArrowInset : 1280.f - kPageArrowInset;
+    const float canvasW = m_homeLayout.logicalW();
+    const float cx = left ? kPageArrowInset : canvasW - kPageArrowInset;
     const float cy = m_arrowCenterY.value();
     return {cx - kPageArrowW * 0.5f, cy - kPageArrowH * 0.5f, kPageArrowW, kPageArrowH};
 }
@@ -11129,11 +11161,10 @@ void WiiUMenuApp::onRender(nxui::Renderer& ren) {
         constexpr float kPunchDur = 0.20f;
         const float punchT = std::clamp(elapsed / kPunchDur, 0.f, 1.f);
         const float scale = 1.f + 0.02f * (1.f - nxui::Easing::outCubic(punchT));
-        const float w = 1280.f * scale;
-        const float h = 720.f * scale;
-        ren.drawTexture(&m_leaveSplashTex,
-                        {(1280.f - w) * 0.5f, (720.f - h) * 0.5f, w, h},
-                        nxui::Color::white().withAlpha(alpha));
+        // FB-captured splash — map into the current layout so portrait stays tall.
+        ren.drawTextureFramebufferCover(&m_leaveSplashTex,
+                                        nxui::Color::white().withAlpha(alpha),
+                                        scale);
     }
 
 #ifdef SWITCHU_DEBUG_UI

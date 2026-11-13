@@ -123,6 +123,8 @@ private:
     GridLayoutMetrics computeGridLayoutMetrics() const;
     GridLayoutMetrics computeGridLayoutMetrics(int columns, int rows) const;
     std::pair<int, int> folderGridDimensions(std::uint32_t folderId) const;
+    /// Portrait display dims for an open folder (storage dims stay landscape).
+    std::pair<int, int> folderViewDimensions(std::uint32_t folderId) const;
     void reflowHomeGrid();
     void reflowHomeShell();
     int activeGridColumns() const;

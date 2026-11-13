@@ -567,6 +567,49 @@ void Renderer::drawOffscreen(int target, const Rect& dest, const Color& tint) {
     useShader(ShaderProgram::Basic);
 }
 
+void Renderer::drawOffscreenFramebufferCover(int target, const Color& tint, float scale) {
+    if (target < 0 || target >= GpuDevice::NUM_OFFSCREEN) return;
+    useShader(ShaderProgram::Backdrop);
+    bindTexture(m_offDescSlot[target]);
+    const float fbW = static_cast<float>(m_gpu.width());
+    const float fbH = static_cast<float>(m_gpu.height());
+    const float s = scale > 0.01f ? scale : 1.f;
+    auto fbToLogical = [&](float fx, float fy) -> Vec2 {
+        switch (m_layoutOrientation) {
+            case DisplayOrientation::Rot90:  return {fbH - fy, fx};
+            case DisplayOrientation::Rot270: return {fy, fbW - fx};
+            case DisplayOrientation::Rot180: return {fbW - fx, fbH - fy};
+            case DisplayOrientation::Landscape0:
+            default: return {fx, fy};
+        }
+    };
+    const Vec2 fbCorners[4] = {
+        {0.f, 0.f}, {fbW, 0.f}, {fbW, fbH}, {0.f, fbH},
+    };
+    const float uvs[4][2] = {{0.f, 0.f}, {1.f, 0.f}, {1.f, 1.f}, {0.f, 1.f}};
+    Vec2 logical[4];
+    Vec2 center{0.f, 0.f};
+    for (int i = 0; i < 4; ++i) {
+        logical[i] = fbToLogical(fbCorners[i].x, fbCorners[i].y);
+        center.x += logical[i].x * 0.25f;
+        center.y += logical[i].y * 0.25f;
+    }
+    if (std::fabs(s - 1.f) > 0.0001f) {
+        for (auto& p : logical) {
+            p.x = center.x + (p.x - center.x) * s;
+            p.y = center.y + (p.y - center.y) * s;
+        }
+    }
+    addVertex(logical[0].x, logical[0].y, uvs[0][0], uvs[0][1], tint);
+    addVertex(logical[1].x, logical[1].y, uvs[1][0], uvs[1][1], tint);
+    addVertex(logical[2].x, logical[2].y, uvs[2][0], uvs[2][1], tint);
+    addVertex(logical[0].x, logical[0].y, uvs[0][0], uvs[0][1], tint);
+    addVertex(logical[2].x, logical[2].y, uvs[2][0], uvs[2][1], tint);
+    addVertex(logical[3].x, logical[3].y, uvs[3][0], uvs[3][1], tint);
+    flush();
+    useShader(ShaderProgram::Basic);
+}
+
 void Renderer::drawOffscreenRounded(int target, const Rect& dest, float radius, const Color& tint) {
     if (target < 0 || target >= GpuDevice::NUM_OFFSCREEN) return;
     useShader(ShaderProgram::Backdrop);
@@ -875,6 +918,48 @@ void Renderer::drawTexture(const Texture* tex, const Rect& dest, const Color& ti
     if (!tex) return;
     bindTexture(tex->descriptorSlot());
     addQuad(dest.x, dest.y, dest.right(), dest.bottom(), 0, 0, 1, 1, tint);
+}
+
+void Renderer::drawTextureFramebufferCover(const Texture* tex, const Color& tint, float scale) {
+    if (!tex) return;
+    const float fbW = static_cast<float>(m_gpu.width());
+    const float fbH = static_cast<float>(m_gpu.height());
+    const float s = scale > 0.01f ? scale : 1.f;
+    auto fbToLogical = [&](float fx, float fy) -> Vec2 {
+        switch (m_layoutOrientation) {
+            case DisplayOrientation::Rot90:  return {fbH - fy, fx};
+            case DisplayOrientation::Rot270: return {fy, fbW - fx};
+            case DisplayOrientation::Rot180: return {fbW - fx, fbH - fy};
+            case DisplayOrientation::Landscape0:
+            default: return {fx, fy};
+        }
+    };
+    // FB corners (TL, TR, BR, BL) with matching UVs.
+    const Vec2 fbCorners[4] = {
+        {0.f, 0.f}, {fbW, 0.f}, {fbW, fbH}, {0.f, fbH},
+    };
+    const float uvs[4][2] = {{0.f, 0.f}, {1.f, 0.f}, {1.f, 1.f}, {0.f, 1.f}};
+    Vec2 logical[4];
+    Vec2 center{0.f, 0.f};
+    for (int i = 0; i < 4; ++i) {
+        logical[i] = fbToLogical(fbCorners[i].x, fbCorners[i].y);
+        center.x += logical[i].x * 0.25f;
+        center.y += logical[i].y * 0.25f;
+    }
+    if (std::fabs(s - 1.f) > 0.0001f) {
+        for (auto& p : logical) {
+            p.x = center.x + (p.x - center.x) * s;
+            p.y = center.y + (p.y - center.y) * s;
+        }
+    }
+    bindTexture(tex->descriptorSlot());
+    // Two triangles: TL-TR-BR, TL-BR-BL
+    addVertex(logical[0].x, logical[0].y, uvs[0][0], uvs[0][1], tint);
+    addVertex(logical[1].x, logical[1].y, uvs[1][0], uvs[1][1], tint);
+    addVertex(logical[2].x, logical[2].y, uvs[2][0], uvs[2][1], tint);
+    addVertex(logical[0].x, logical[0].y, uvs[0][0], uvs[0][1], tint);
+    addVertex(logical[2].x, logical[2].y, uvs[2][0], uvs[2][1], tint);
+    addVertex(logical[3].x, logical[3].y, uvs[3][0], uvs[3][1], tint);
 }
 
 void Renderer::drawTextureSub(const Texture* tex, const Rect& src, const Rect& dest, const Color& tint) {

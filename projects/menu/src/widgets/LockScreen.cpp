@@ -9,10 +9,9 @@
 #include <cstdio>
 
 namespace {
-constexpr float kScreenW = 1280.f;
-constexpr float kScreenH = 720.f;
+float g_lockW = 1280.f;
+float g_lockH = 720.f;
 constexpr float kMargin = 56.f;
-constexpr float kCurtainTravel = 740.f;
 constexpr float kInputGuard = 0.35f;
 constexpr int kTimeFontPt = 88;
 constexpr float kDateScale = 1.21f;
@@ -36,15 +35,22 @@ constexpr float kZoomOutExit = 1.58f;
 constexpr float kZoomInExit = 0.48f;
 constexpr float kResumeBtnW = 280.f;
 constexpr float kResumeBtnH = 52.f;
-constexpr float kResumeBtnY = 520.f;
+constexpr float kResumeBtnYLandscape = 520.f;
 constexpr float kIconSize = 148.f;
 constexpr float kIconRadius = 16.f; // match GlossyIcon grid tiles
-// Vertically center the tile between the clock block and Resume.
 constexpr float kClockBottom = 230.f;
-constexpr float kIconY = (kClockBottom + kResumeBtnY) * 0.5f - kIconSize * 0.5f;
 constexpr float kSwipeCommit = 0.28f;
 constexpr float kSwipeFlickPx = 140.f;
 constexpr float kSwipeDeadzone = 18.f;
+
+float curtainTravel() { return g_lockH + 20.f; }
+float resumeBtnY() {
+    // Keep near the bottom of whatever canvas we're on.
+    return std::max(kResumeBtnYLandscape, g_lockH - 200.f);
+}
+float iconY() {
+    return (kClockBottom + resumeBtnY()) * 0.5f - kIconSize * 0.5f;
+}
 
 std::string replaceAll(std::string text, const std::string& token, const std::string& value) {
     for (std::size_t pos = text.find(token); pos != std::string::npos;
@@ -54,8 +60,8 @@ std::string replaceAll(std::string text, const std::string& token, const std::st
 }
 
 nxui::Vec2 mapLockPt(float x, float y, float dx, float dy, float zoom) {
-    const float cx = kScreenW * 0.5f;
-    const float cy = kScreenH * 0.5f;
+    const float cx = g_lockW * 0.5f;
+    const float cy = g_lockH * 0.5f;
     return {cx + (x - cx) * zoom + dx, cy + (y - cy) * zoom + dy};
 }
 
@@ -67,23 +73,29 @@ void drawCentered(nxui::Renderer& ren, const std::string& text, float y,
     const nxui::Vec2 sz = font->measure(text);
     const float w = sz.x * scale;
     const float h = sz.y * scale;
-    const float x = (kScreenW - w) * 0.5f;
+    const float x = (g_lockW - w) * 0.5f;
     const nxui::Vec2 c = mapLockPt(x + w * 0.5f, y + h * 0.5f, dx, dy, zoom);
     const float zs = scale * zoom;
     ren.drawText(text, {c.x - sz.x * zs * 0.5f, c.y - sz.y * zs * 0.5f}, font, color, zs);
 }
 
 nxui::Rect resumeButtonRect(float dy) {
-    return {(kScreenW - kResumeBtnW) * 0.5f, kResumeBtnY + dy, kResumeBtnW, kResumeBtnH};
+    return {(g_lockW - kResumeBtnW) * 0.5f, resumeBtnY() + dy, kResumeBtnW, kResumeBtnH};
 }
 
 nxui::Rect iconRect(float dy) {
-    return {(kScreenW - kIconSize) * 0.5f, kIconY + dy, kIconSize, kIconSize};
+    return {(g_lockW - kIconSize) * 0.5f, iconY() + dy, kIconSize, kIconSize};
 }
 }
 
+void LockScreen::setCanvasSize(float width, float height) {
+    g_lockW = width > 1.f ? width : 1280.f;
+    g_lockH = height > 1.f ? height : 720.f;
+    setRect({0.f, 0.f, g_lockW, g_lockH});
+}
+
 LockScreen::LockScreen() {
-    setRect({0.f, 0.f, kScreenW, kScreenH});
+    setRect({0.f, 0.f, g_lockW, g_lockH});
     setVisible(false);
     setFocusable(true);
     setLiquidGlassEnabled(false);
@@ -359,7 +371,7 @@ void LockScreen::handleTouch(nxui::Input& input) {
                 return;
             m_swipeDragging = true;
         }
-        const float progress = std::clamp(dy / kCurtainTravel, 0.f, 1.f);
+        const float progress = std::clamp(dy / curtainTravel(), 0.f, 1.f);
         m_curtain.setImmediate(progress);
         if (m_transition == Transition::Dissolve)
             m_fade.setImmediate(1.f - progress);
@@ -527,16 +539,16 @@ void LockScreen::drawAtmosphere(nxui::Renderer& ren, float dx, float dy, float z
     const float vig = (m_hasHero ? 0.34f : 0.28f) + 0.10f * breath;
 
     // Top / bottom vignette only (no side bars).
-    ren.drawGradientRect(at({0.f, 0.f, kScreenW, 210.f}),
+    ren.drawGradientRect(at({0.f, 0.f, g_lockW, 210.f}),
                          nxui::Color(0.f, 0.f, 0.f, vig * fade),
                          nxui::Color(0.f, 0.f, 0.f, 0.f));
-    ren.drawGradientRect(at({0.f, kScreenH - 240.f, kScreenW, 240.f}),
+    ren.drawGradientRect(at({0.f, g_lockH - 240.f, g_lockW, 240.f}),
                          nxui::Color(0.f, 0.f, 0.f, 0.f),
                          nxui::Color(0.f, 0.f, 0.f, (vig + 0.12f) * fade));
 
     if (m_hasHero) {
         // Cinematic bottom wash so Resume sits in the poster.
-        ren.drawGradientRect(at({0.f, 300.f, kScreenW, 420.f}),
+        ren.drawGradientRect(at({0.f, 300.f, g_lockW, 420.f}),
                              nxui::Color(0.f, 0.f, 0.f, 0.f),
                              nxui::Color(0.f, 0.f, 0.f, 0.58f * fade));
     }
@@ -561,7 +573,7 @@ void LockScreen::drawClock(nxui::Renderer& ren, float dx, float dy, float zoom, 
                 const nxui::Vec2 colonSz = m_timeFont->measure(":");
                 const nxui::Vec2 rightSz = m_timeFont->measure(right);
                 const float total = leftSz.x + colonSz.x + rightSz.x;
-                const float baseX = (kScreenW - total) * 0.5f;
+                const float baseX = (g_lockW - total) * 0.5f;
                 const float baseY = 122.f;
                 auto drawGlyph = [&](const std::string& g, float gx, float gw,
                                      const nxui::Color& c) {
@@ -577,7 +589,7 @@ void LockScreen::drawClock(nxui::Renderer& ren, float dx, float dy, float zoom, 
                 return total;
             }
             const nxui::Vec2 tsz = m_timeFont->measure(m_timeStr);
-            const nxui::Vec2 cpt = mapLockPt((kScreenW) * 0.5f, 122.f + tsz.y * 0.5f, dx, dy, zoom);
+            const nxui::Vec2 cpt = mapLockPt((g_lockW) * 0.5f, 122.f + tsz.y * 0.5f, dx, dy, zoom);
             ren.drawText(m_timeStr, {cpt.x - tsz.x * zoom * 0.5f, cpt.y - tsz.y * zoom * 0.5f},
                          m_timeFont.get(), color, zoom);
             return tsz.x;
@@ -592,7 +604,7 @@ void LockScreen::drawClock(nxui::Renderer& ren, float dx, float dy, float zoom, 
         const float band = std::max(72.f, totalW * 0.32f) * zoom;
         const float span = totalW * zoom + band * 2.f;
         const float waveX = std::fmod(m_atmosPhase * 95.f, span) - band;
-        const nxui::Vec2 origin = mapLockPt((kScreenW - totalW) * 0.5f, 122.f, dx, dy, zoom);
+        const nxui::Vec2 origin = mapLockPt((g_lockW - totalW) * 0.5f, 122.f, dx, dy, zoom);
         const float clockH = (m_timeFont ? static_cast<float>(m_timeFont->ptSize()) * 1.35f
                                          : 90.f) * zoom;
         ren.pushClipRect({origin.x + waveX, origin.y - 8.f * zoom, band, clockH});
@@ -613,8 +625,8 @@ void LockScreen::render(nxui::Renderer& ren) {
     const float bgZoom = std::max(zoom, 1.f);
     // Wipe stays put — clip only. Curtain is the only plane that translates.
     const float dx = 0.f;
-    const float dy = (m_transition == Transition::Curtain) ? (-curtainT * kCurtainTravel) : 0.f;
-    if (dy <= -kScreenH)
+    const float dy = (m_transition == Transition::Curtain) ? (-curtainT * curtainTravel()) : 0.f;
+    if (dy <= -g_lockH)
         return;
 
     // Zoom: scale Lock chrome around screen center (BG uses bgZoom separately).
@@ -646,19 +658,19 @@ void LockScreen::render(nxui::Renderer& ren) {
     if (m_transition == Transition::Wipe
         && (curtainT > 0.001f || m_unlocking || m_awaitEnterSettle || m_swipeDragging)) {
         const float remain = std::clamp(1.f - curtainT, 0.f, 1.f);
-        nxui::Rect clip = {0.f, 0.f, kScreenW, kScreenH};
+        nxui::Rect clip = {0.f, 0.f, g_lockW, g_lockH};
         switch (m_wipeDir) {
             case 0: // Up — wipe reveals from bottom
-                clip = {0.f, kScreenH * (1.f - remain), kScreenW, kScreenH * remain};
+                clip = {0.f, g_lockH * (1.f - remain), g_lockW, g_lockH * remain};
                 break;
             case 2: // Down — wipe reveals from top
-                clip = {0.f, 0.f, kScreenW, kScreenH * remain};
+                clip = {0.f, 0.f, g_lockW, g_lockH * remain};
                 break;
             case 3: // Left — wipe reveals from right
-                clip = {kScreenW * (1.f - remain), 0.f, kScreenW * remain, kScreenH};
+                clip = {g_lockW * (1.f - remain), 0.f, g_lockW * remain, g_lockH};
                 break;
             default: // Right — wipe reveals from left
-                clip = {0.f, 0.f, kScreenW * remain, kScreenH};
+                clip = {0.f, 0.f, g_lockW * remain, g_lockH};
                 break;
         }
         ren.pushClipRect(clip);
@@ -668,14 +680,29 @@ void LockScreen::render(nxui::Renderer& ren) {
     const bool paintPlane = m_hasHero || curtainMoving || wipeMoving || dissolveZoomPlane;
     if (paintPlane && fade > 0.01f) {
         if (m_hasHero) {
-            ren.drawTexture(&m_heroTex, atZoom({0.f, 0.f, kScreenW, kScreenH}, bgZoom),
+            const nxui::Rect heroDest = atZoom({0.f, 0.f, g_lockW, g_lockH}, bgZoom);
+            const float tw = static_cast<float>(m_heroTex.width());
+            const float th = static_cast<float>(m_heroTex.height());
+            nxui::Rect heroSrc{0.f, 0.f, tw, th};
+            if (tw > 1.f && th > 1.f && heroDest.width > 1.f && heroDest.height > 1.f) {
+                const float sa = tw / th;
+                const float da = heroDest.width / heroDest.height;
+                if (sa > da) {
+                    const float cw = th * da;
+                    heroSrc = {(tw - cw) * 0.5f, 0.f, cw, th};
+                } else {
+                    const float ch = tw / da;
+                    heroSrc = {0.f, (th - ch) * 0.5f, tw, ch};
+                }
+            }
+            ren.drawTextureSub(&m_heroTex, heroSrc, heroDest,
                             nxui::Color::white().withAlpha(fade));
-            ren.drawRect(atZoom({0.f, 0.f, kScreenW, kScreenH}, bgZoom),
+            ren.drawRect(atZoom({0.f, 0.f, g_lockW, g_lockH}, bgZoom),
                          nxui::Color(0.f, 0.f, 0.f, (m_unlocking ? 0.55f : 0.42f) * fade));
         } else if (m_onDrawBackdrop) {
             m_onDrawBackdrop(ren, dy, fade, bgZoom);
         } else {
-            ren.drawRect(atZoom({0.f, 0.f, kScreenW, kScreenH}, bgZoom),
+            ren.drawRect(atZoom({0.f, 0.f, g_lockW, g_lockH}, bgZoom),
                          th.background.withAlpha(fade));
         }
     }
@@ -693,7 +720,7 @@ void LockScreen::render(nxui::Renderer& ren) {
     if (m_battery >= 0) {
         const std::string pct = std::to_string(m_battery) + "%";
         const nxui::Vec2 psz = small->measure(pct);
-        const float right = kScreenW - kMargin;
+        const float right = g_lockW - kMargin;
         const nxui::Vec2 pctC = mapLockPt(right - psz.x * 0.5f, 44.f + psz.y * 0.5f, dx, dy, zoom);
         ren.drawText(pct, {pctC.x - psz.x * zoom * 0.5f, pctC.y - psz.y * zoom * 0.5f},
                      small, inkSoft, zoom);

@@ -107,6 +107,11 @@ public:
     void drawGradientRect(const Rect& r, const Color& top, const Color& bottom);
     void drawTexture(const Texture* tex, const Rect& dest, const Color& tint = Color::white());
     void drawTextureSub(const Texture* tex, const Rect& src, const Rect& dest, const Color& tint = Color::white());
+    /// Draw a FB-space capture so it covers the physical screen under the
+    /// current layout projection (leave splash / folder backdrop). `scale`
+    /// punches around the FB centre (1 = exact cover).
+    void drawTextureFramebufferCover(const Texture* tex, const Color& tint = Color::white(),
+                                     float scale = 1.f);
     void drawTextureRounded(const Texture* tex, const Rect& dest, float radius, const Color& tint = Color::white());
     void drawTextureSubRounded(const Texture* tex, const Rect& src, const Rect& dest,
                                float radius, const Color& tint = Color::white());
@@ -121,6 +126,8 @@ public:
     void captureToOffscreen(bool reuseIfValid = false);
     void copyOffscreen(int srcTarget, int dstTarget);
     void drawOffscreen(int target, const Rect& dest, const Color& tint = Color::white());
+    void drawOffscreenFramebufferCover(int target, const Color& tint = Color::white(),
+                                       float scale = 1.f);
     void drawOffscreenRounded(int target, const Rect& dest, float radius,
                               const Color& tint = Color::white());
     void drawLiquidGlass(int target, const Rect& panelRect, float radius,

@@ -210,8 +210,11 @@ void SidebarManager::setDynamicLineLayout(bool enabled) {
                       static_cast<float>(order) * kSidebarGlideStagger);
     };
 
-    if (enabled) {
-        // Strip X positions scale with canvas width so portrait still fits.
+    // Portrait single-row keeps the grid-style side columns — the top strip
+    // collides with clock / orientation / battery on a 720-wide HUD.
+    const bool topStrip = enabled && m_canvasH <= m_canvasW + 0.5f;
+    if (topStrip) {
+        // Strip X positions scale with canvas width so ultra-wide still fits.
         const float scaleX = m_canvasW / 1280.f;
         const float leftGroupX = kDynamicLeftGroupX * scaleX;
         const float rightGroupX = kDynamicRightGroupX * scaleX;
