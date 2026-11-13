@@ -75,9 +75,17 @@ struct HomeLayoutMetrics {
     float sidebarRightX() const {
         return logicalW() - kSidebarMargin - kSidebarBtn;
     }
+    // Portrait: top-align under the HUD so side icons clear the grid/carousel.
+    // Landscape: vertically centre on the canvas mid (classic HOME).
     float sidebarStartY() const {
+        if (isPortrait())
+            return kTopHudH + 8.f;
         const float totalH = 3.f * kSidebarBtn + 2.f * kSidebarGap;
         return logicalH() * 0.5f - totalH * 0.5f;
+    }
+
+    float sidebarBottomY() const {
+        return sidebarStartY() + 3.f * kSidebarBtn + 2.f * kSidebarGap;
     }
 
     // Logical → FB. Content is laid CCW into the buffer so nwindow ROT_90/270

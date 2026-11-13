@@ -43,11 +43,16 @@ std::string joinPath(const std::string& base, const std::string& name) {
 
 
 void SidebarManager::setCanvasSize(float width, float height) {
-    m_canvasW = width > 0.f ? width : 1280.f;
-    m_canvasH = height > 0.f ? height : 720.f;
-    // Re-place columns / strip for the new canvas without rebuilding buttons.
-    if (!m_leftButtons.empty() || !m_rightButtons.empty())
-        setDynamicLineLayout(m_dynamicLine);
+    const float nextW = width > 0.f ? width : 1280.f;
+    const float nextH = height > 0.f ? height : 720.f;
+    const bool sizeChanged = std::abs(nextW - m_canvasW) > 0.5f
+        || std::abs(nextH - m_canvasH) > 0.5f;
+    m_canvasW = nextW;
+    m_canvasH = nextH;
+    // Re-place for a real canvas change. Snap — orientation flips already
+    // teleport the rest of HOME; gliding sidebars here reads as a fly-in.
+    if (sizeChanged && (!m_leftButtons.empty() || !m_rightButtons.empty()))
+        setDynamicLineLayout(m_dynamicLine, false);
 }
 
 void SidebarManager::build(nxui::GpuDevice& gpu, nxui::Renderer& ren,
@@ -183,7 +188,7 @@ void SidebarManager::updateButtonGlides(float dt) {
     }
 }
 
-void SidebarManager::setDynamicLineLayout(bool enabled) {
+void SidebarManager::setDynamicLineLayout(bool enabled, bool animate) {
     m_dynamicLine = enabled;
     std::vector<AppletButton*> ordered;
     ordered.reserve(m_leftButtons.size() + m_rightButtons.size());
@@ -198,12 +203,15 @@ void SidebarManager::setDynamicLineLayout(bool enabled) {
         button->setCustomNavigation(nxui::FocusDirection::DOWN, nullptr);
     }
 
-    // Boot snaps to the configured layout; later flips glide into place.
-    const bool animate = m_layoutArranged;
+    // Boot snaps; layout flips glide. Callers can force a snap (return/splash).
+    const bool doAnimate = animate && m_layoutArranged;
     m_layoutArranged = true;
     const auto place = [&](AppletButton* button, const nxui::Rect& target, int order) {
-        if (!animate) {
+        if (!doAnimate) {
             button->setRect(target);
+            for (auto& glide : m_buttonGlides)
+                if (glide.button == button)
+                    glide.active = false;
             return;
         }
         glideButtonTo(button, target,
@@ -212,7 +220,8 @@ void SidebarManager::setDynamicLineLayout(bool enabled) {
 
     // Portrait single-row keeps the grid-style side columns — the top strip
     // collides with clock / orientation / battery on a 720-wide HUD.
-    const bool topStrip = enabled && m_canvasH <= m_canvasW + 0.5f;
+    const bool portrait = m_canvasH > m_canvasW + 0.5f;
+    const bool topStrip = enabled && !portrait;
     if (topStrip) {
         // Strip X positions scale with canvas width so ultra-wide still fits.
         const float scaleX = m_canvasW / 1280.f;
@@ -238,8 +247,12 @@ void SidebarManager::setDynamicLineLayout(bool enabled) {
         return;
     }
 
+    // Portrait: top-align under the HUD so columns clear the grid/carousel.
+    // Landscape grid: vertically centre (classic HOME).
+    constexpr float kPortraitTopY = 98.f; // kTopHudH (90) + 8
     const float totalH = 3.f * kSidebarButtonSize + 2.f * kSidebarColumnGap;
-    const float startY = m_canvasH * 0.5f - totalH * 0.5f;
+    const float startY = portrait ? kPortraitTopY
+                                  : (m_canvasH * 0.5f - totalH * 0.5f);
     const float rightX = m_canvasW - kSidebarMarginX - kSidebarButtonSize;
     for (std::size_t i = 0; i < m_leftButtons.size(); ++i) {
         place(m_leftButtons[i].get(),

@@ -564,7 +564,7 @@ void QuickSettingsOverlay::drawMusicControlIcon(nxui::Renderer& ren,
 }
 
 QuickSettingsOverlay::QuickSettingsOverlay() {
-    setRect({0.f, 0.f, 1280.f, 720.f});
+    setRect({0.f, 0.f, m_canvasW, m_canvasH});
     setVisible(false);
     setFocusable(true);
     setFrameworkTouchEnabled(false);
@@ -576,6 +576,15 @@ QuickSettingsOverlay::QuickSettingsOverlay() {
 }
 
 QuickSettingsOverlay::~QuickSettingsOverlay() = default;
+
+void QuickSettingsOverlay::setCanvasSize(float width, float height) {
+    m_canvasW = width > 1.f ? width : 1280.f;
+    m_canvasH = height > 1.f ? height : 720.f;
+    // Keep the widget's hit/clip rect covering the full logical canvas so the
+    // slide-in panel and scrim stay on-screen in portrait.
+    if (!m_active)
+        setRect({0.f, 0.f, m_canvasW, m_canvasH});
+}
 
 void QuickSettingsOverlay::setTheme(const nxui::Theme* t) {
     m_theme = t;
@@ -2139,11 +2148,22 @@ void QuickSettingsOverlay::triggerPowerAction(PowerAction action) {
 }
 
 nxui::Rect QuickSettingsOverlay::computePanelRect() const {
-    float openX = 1280.f - kPanelWidth - kPanelMarginRight;
-    float closedX = 1280.f;
-    float eased = nxui::Easing::outCubic(m_animProgress);
-    float curX = closedX + (openX - closedX) * eased;
-    return {curX, kPanelTop, kPanelWidth, kPanelHeight};
+    // Portrait: centre a slightly narrower panel so 440px chrome fits the
+    // 720-wide logical canvas without hugging a landscape-only right edge.
+    const bool portrait = m_canvasH > m_canvasW + 0.5f;
+    const float panelW = portrait
+        ? std::min(kPanelWidth, m_canvasW - 2.f * kPanelMarginRight)
+        : kPanelWidth;
+    const float openX = portrait
+        ? (m_canvasW - panelW) * 0.5f
+        : (m_canvasW - panelW - kPanelMarginRight);
+    const float closedX = m_canvasW;
+    const float eased = nxui::Easing::outCubic(m_animProgress);
+    const float curX = closedX + (openX - closedX) * eased;
+    const float top = portrait
+        ? std::max(12.f, (m_canvasH - kPanelHeight) * 0.5f)
+        : kPanelTop;
+    return {curX, top, panelW, kPanelHeight};
 }
 
 nxui::Rect QuickSettingsOverlay::computePlaylistRect() const {
@@ -2293,12 +2313,11 @@ nxui::Rect QuickSettingsOverlay::computeProgressTrackRect() const {
 
 nxui::Rect QuickSettingsOverlay::computeCoverFsCardRect() const {
     // Bottom-centered floating player over the fullscreen cover.
-    const float sw = 1280.f;
-    const float sh = 720.f;
+    const float cardW = std::min(kCoverFsCardW, m_canvasW - 32.f);
     return {
-        (sw - kCoverFsCardW) * 0.5f,
-        sh - kCoverFsCardBottomPad - kCoverFsCardH,
-        kCoverFsCardW,
+        (m_canvasW - cardW) * 0.5f,
+        m_canvasH - kCoverFsCardBottomPad - kCoverFsCardH,
+        cardW,
         kCoverFsCardH
     };
 }
@@ -2838,7 +2857,10 @@ void QuickSettingsOverlay::render(nxui::Renderer& ren) {
     auto& i18n = nxui::I18n::instance();
     float alpha = m_animProgress;
 
-    nxui::Rect screen = {0.f, 0.f, (float)ren.width(), (float)ren.height()};
+    // Prefer logical layout size so portrait scrim covers 720×1280, not FB.
+    const float scrimW = ren.layoutWidth() > 1.f ? ren.layoutWidth() : m_canvasW;
+    const float scrimH = ren.layoutHeight() > 1.f ? ren.layoutHeight() : m_canvasH;
+    nxui::Rect screen = {0.f, 0.f, scrimW, scrimH};
     nxui::Color scrim = m_theme
         ? nxui::Color::lerp(m_theme->background, nxui::Color::black(),
                             m_theme->mode == nxui::ThemeMode::Dark ? 0.65f : 0.20f)

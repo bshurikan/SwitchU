@@ -49,7 +49,16 @@ float resumeBtnY() {
     return std::max(kResumeBtnYLandscape, g_lockH - 200.f);
 }
 float iconY() {
-    return (kClockBottom + resumeBtnY()) * 0.5f - kIconSize * 0.5f;
+    // Sit between the clock band and the resume button, with enough gap
+    // above the button for the "Press B to unlock" hint on tall canvases.
+    const float top = kClockBottom + 24.f;
+    const float bottom = resumeBtnY() - 72.f;
+    const float mid = (top + bottom) * 0.5f - kIconSize * 0.5f;
+    return std::clamp(mid, top, std::max(top, bottom - kIconSize));
+}
+float unlockHintY() {
+    // Always below the resume control so it never sits on the suspended tile.
+    return resumeBtnY() + kResumeBtnH + 28.f;
 }
 
 std::string replaceAll(std::string text, const std::string& token, const std::string& value) {
@@ -785,7 +794,7 @@ void LockScreen::render(nxui::Renderer& ren) {
                      {btn.x + (btn.width - rsz.x * zoom) * 0.5f,
                       btn.y + (btn.height - rsz.y * zoom) * 0.5f},
                      m_font, ink, zoom);
-        drawCentered(ren, m_unlockText, 600.f, small, inkSoft, 1.0f, dx, dy, zoom);
+        drawCentered(ren, m_unlockText, unlockHintY(), small, inkSoft, 1.0f, dx, dy, zoom);
     } else {
         drawCentered(ren, m_unlockText, 348.f, m_font, inkSoft, 1.05f, dx, dy, zoom);
     }

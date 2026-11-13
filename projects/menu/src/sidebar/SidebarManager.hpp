@@ -40,7 +40,8 @@ public:
 
     // The dynamic-line HOME layout turns the two side columns into one
     // horizontal control strip between the profile bar and the applications.
-    void setDynamicLineLayout(bool enabled);
+    // Pass animate=false to snap (e.g. splash handoff / return from title).
+    void setDynamicLineLayout(bool enabled, bool animate = true);
     void setDynamicLineDownAction(std::function<void()> action);
     void setDynamicLineUpTarget(nxui::Widget* target);
     void setDynamicLineProfileTarget(nxui::Widget* profile);

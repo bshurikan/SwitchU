@@ -576,7 +576,7 @@ private:
     bool tryCommitInPlaceLayoutMorph(std::uint64_t focused);
     void updateLayoutTransition(float dt);
     void layoutPrefetchWindow(int& page, int& pageSize) const;
-    void configureDynamicLineNavigation();
+    void configureDynamicLineNavigation(bool animateSidebar = true);
     void cycleSortMode();
     std::string sortModeLabel() const;
     AppLayoutMode appLayoutMode() const { return m_appLayoutMode; }

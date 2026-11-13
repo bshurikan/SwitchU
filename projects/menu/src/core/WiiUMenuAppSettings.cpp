@@ -772,6 +772,7 @@ void WiiUMenuApp::createQuickSettings() {
     m_quickSettings->setSmallFont(&m_fontSmall);
     m_quickSettings->setIconFont(&m_fontIcons);
     m_quickSettings->setTheme(&m_theme);
+    m_quickSettings->setCanvasSize(m_homeLayout.logicalW(), m_homeLayout.logicalH());
     m_quickSettings->setInstantCursorMotion(m_config.cursorMotionMode == 1);
     m_quickSettings->setInput(&app().input());
 

@@ -867,7 +867,8 @@ void WiiUMenuApp::updateLeaveSplashHandoff(float dt) {
             refreshOpenFolderChrome();
             if (m_grid) {
                 m_grid->setLayoutMode(m_appLayoutMode, false);
-                configureDynamicLineNavigation();
+                // Snap sidebars — gliding on splash handoff reads as a fly-in.
+                configureDynamicLineNavigation(false);
             }
             // Splash blocks focusRoot() the whole hold/fade. Re-pin a title
             // when input returns so D-pad isn't stranded on chrome/spatial.
@@ -1568,6 +1569,8 @@ void WiiUMenuApp::reflowHomeShell() {
             cfg.imageCover = m_effectivePreset.background.imageCover;
             m_background->setConfig(cfg);
         }
+        if (m_steamGridDbBackdrop)
+            m_steamGridDbBackdrop->setRect({0.f, 0.f, 1280.f, 720.f});
         if (m_topHud) {
             m_topHud->setRect({0.f, 0.f, 1280.f, 90.f});
             m_topHud->layout();
@@ -1593,6 +1596,9 @@ void WiiUMenuApp::reflowHomeShell() {
             cfg.imageCover = true;
             m_background->setConfig(cfg);
         }
+        // Heroes use the same full logical canvas + cover fill as wallpaper.
+        if (m_steamGridDbBackdrop)
+            m_steamGridDbBackdrop->setRect(m_homeLayout.contentCanvas());
         if (m_topHud) {
             m_topHud->setRect(m_homeLayout.topHud());
             m_topHud->layout();
@@ -1614,6 +1620,7 @@ void WiiUMenuApp::reflowHomeShell() {
     if (m_lockScreen) m_lockScreen->setCanvasSize(canvasW, canvasH);
     if (m_launchAnim) m_launchAnim->setCanvasSize(canvasW, canvasH);
     if (m_folderBackdrop) m_folderBackdrop->setCanvasSize(canvasW, canvasH);
+    if (m_quickSettings) m_quickSettings->setCanvasSize(canvasW, canvasH);
 
     // Portrait single-row keeps side columns (SidebarManager skips the top strip).
     const bool dynamicLine = m_appLayoutMode == AppLayoutMode::DynamicLine
@@ -4486,10 +4493,10 @@ void WiiUMenuApp::cycleSortMode() {
     reflowHomeGrid();
 }
 
-void WiiUMenuApp::configureDynamicLineNavigation() {
+void WiiUMenuApp::configureDynamicLineNavigation(bool animateSidebar) {
     const bool dynamicLine = m_appLayoutMode == AppLayoutMode::DynamicLine;
     const bool inFolder = (m_openFolderId != 0);
-    m_sidebar.setDynamicLineLayout(dynamicLine);
+    m_sidebar.setDynamicLineLayout(dynamicLine, animateSidebar);
     placeLayoutFlipButton();
 
     if (m_grid) {
@@ -5519,9 +5526,10 @@ void WiiUMenuApp::placeFolderHeader(const nxui::Rect& panel) {
     const float minY = (m_topHud && m_topHud->isVisible()) ? 88.f : kFolderHeaderMinY;
     m_folderHeaderRest.y = std::max(minY,
         panel.y - kFolderHeaderGap - m_folderHeaderRest.height);
-    // Single-row: left so it does not cover clock / Change View / a Poster.
-    // Grid: centered title under the clock band.
-    if (m_appLayoutMode == AppLayoutMode::DynamicLine) {
+    // Landscape single-row: left so it does not cover clock / Change View /
+    // a Poster. Portrait single-row + grid: centred (grid title position)
+    // so the label clears the focused carousel tile.
+    if (m_appLayoutMode == AppLayoutMode::DynamicLine && !m_homeLayout.isPortrait()) {
         m_folderHeaderRest.x = panel.x + 12.f;
         m_folderHeaderRest.width = 300.f;
     } else {
@@ -10373,6 +10381,14 @@ bool WiiUMenuApp::pagingAvailable() {
 
 nxui::Rect WiiUMenuApp::pageArrowRect(bool left) {
     const float canvasW = m_homeLayout.logicalW();
+    if (m_homeLayout.isPortrait()) {
+        // Edge-aligned, parked under the top-aligned side icon columns so
+        // they clear both the grid and the peripheral titles.
+        constexpr float kEdgeInset = 36.f;
+        const float cx = left ? kEdgeInset : canvasW - kEdgeInset;
+        const float cy = m_homeLayout.sidebarBottomY() + 18.f + kPageArrowH * 0.5f;
+        return {cx - kPageArrowW * 0.5f, cy - kPageArrowH * 0.5f, kPageArrowW, kPageArrowH};
+    }
     const float cx = left ? kPageArrowInset : canvasW - kPageArrowInset;
     const float cy = m_arrowCenterY.value();
     return {cx - kPageArrowW * 0.5f, cy - kPageArrowH * 0.5f, kPageArrowW, kPageArrowH};
