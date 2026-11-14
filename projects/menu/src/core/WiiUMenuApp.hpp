@@ -785,6 +785,9 @@ private:
     // After recreateSwapchain, underscan / music / cursor run over a few frames
     // so a hang in any of them still leaves "console awake" + step logs.
     int  m_wakePostSwapchainFrames = 0;
+    // Mix_PlayMusic on the wake frame soft-locks the UI thread (Lock frozen).
+    // Count down after unlock (or after wake when Lock is off), then restore.
+    int  m_wakeMusicResumeFrames = 0;
     bool m_editMode          = false;
     // Same-frame A after edit place: icon action exits edit, then bubbled root
     // A would arm Activate and open/launch the tile — suppress that press.

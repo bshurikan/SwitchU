@@ -7619,6 +7619,8 @@ void WiiUMenuApp::finishExitLockView(bool resumeSuspended) {
         m_startLocked = false;
         m_leaveCaptureLockCursor = false;
         endForcedCursorTeleport();
+        m_musicWasPlayingBeforeSleep = false;
+        m_wakeMusicResumeFrames = 0;
         m_audio.playSfx(Sfx::Activate);
         DebugLog::log("[lock] Lock view -> resuming suspended title (hold Lock)");
         m_launcher.resumeApplication();
@@ -7634,6 +7636,13 @@ void WiiUMenuApp::finishExitLockView(bool resumeSuspended) {
         m_bgLayer->setVisible(true);
     if (m_contentLayer)
         m_contentLayer->setVisible(true);
+
+    // Music paused for sleep: resume after Lock input is responsive again.
+    if (m_musicWasPlayingBeforeSleep && m_config.musicEnabled) {
+        m_wakeMusicResumeFrames = 20;
+        DebugLog::log("[power] unlock: arm wake music resume in 20f");
+    }
+    m_musicWasPlayingBeforeSleep = false;
 
     m_audio.playSfx(Sfx::Activate);
     beginForcedCursorTeleport();
@@ -8390,13 +8399,40 @@ void WiiUMenuApp::onUpdateAwake(float dt) {
             // Prefer last daemon-forwarded mode; avoid stale local libnx cache.
             switchu::menu::applyScreenUnderscan(m_lastOperationMode);
         } else if (step == 2) {
-            DebugLog::log("[power] wake step: audio");
-            if (m_musicWasPlayingBeforeSleep && m_config.musicEnabled)
-                m_audio.play();
-            m_musicWasPlayingBeforeSleep = false;
+            // Never Mix_PlayMusic here. 2026-11-14 menu.log: wake reached
+            // "wake step: audio" then froze on Lock — Mix_PlayMusic soft-locked
+            // the UI thread so A/B never unlocked. Resume after unlock (or a
+            // short delay when Lock is off).
+            DebugLog::log("[power] wake step: audio lockView=%d wasPlaying=%d",
+                          m_lockViewActive ? 1 : 0,
+                          m_musicWasPlayingBeforeSleep ? 1 : 0);
+            if (m_musicWasPlayingBeforeSleep && m_config.musicEnabled) {
+                if (m_lockViewActive) {
+                    DebugLog::log("[power] wake music held until unlock");
+                } else {
+                    m_wakeMusicResumeFrames = 45;
+                    m_musicWasPlayingBeforeSleep = false;
+                }
+            } else {
+                m_musicWasPlayingBeforeSleep = false;
+            }
         } else if (step == 1) {
             DebugLog::log("[power] wake step: cursor");
             updateCursor();
+        }
+    }
+
+    if (m_wakeMusicResumeFrames > 0) {
+        --m_wakeMusicResumeFrames;
+        if (m_wakeMusicResumeFrames == 0) {
+            DebugLog::log("[power] wake music resume begin");
+            m_audio.setResumePositionEnabled(m_config.musicResumePosition);
+            m_audio.restorePlaybackState(m_config.musicTrackIndex,
+                                         m_config.musicPositionSeconds,
+                                         true,
+                                         m_config.musicTrackKey);
+            DebugLog::log("[power] wake music resume done deferredSeek=%d",
+                          m_audio.hasDeferredSeek() ? 1 : 0);
         }
     }
 
