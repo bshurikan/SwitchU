@@ -653,15 +653,6 @@ void LockScreen::render(nxui::Renderer& ren) {
 
     const nxui::Theme& th = *m_theme;
     const float fade = std::clamp(m_fade.value(), 0.f, 1.f);
-    const bool curtainMoving = m_transition == Transition::Curtain
-        && (m_unlocking || m_swipeDragging || curtainT > 0.001f || m_awaitEnterSettle);
-    const bool wipeMoving = m_transition == Transition::Wipe
-        && (m_unlocking || m_swipeDragging || curtainT > 0.001f || m_awaitEnterSettle);
-    // Dissolve/Zoom: paint the Lock plane (wallpaper + chrome) as one unit so
-    // they fade/zoom together over HOME — gradient now respects opacity.
-    const bool dissolveZoomPlane = keepsHomeUnderlay()
-        && (m_unlocking || m_awaitEnterSettle || fade < 0.995f
-            || std::fabs(zoom - 1.f) > 0.002f);
 
     bool clipped = false;
     if (m_transition == Transition::Wipe
@@ -686,8 +677,10 @@ void LockScreen::render(nxui::Renderer& ren) {
         clipped = true;
     }
 
-    const bool paintPlane = m_hasHero || curtainMoving || wipeMoving || dissolveZoomPlane;
-    if (paintPlane && fade > 0.01f) {
+    // Settled no-hero used to skip the plane and rely on bgLayer under Lock.
+    // Settings / Theme Shop live on overlayLayer *under* Lock and cover that
+    // wallpaper — always paint so Lock stays opaque over open menus.
+    if (fade > 0.01f) {
         if (m_hasHero) {
             const nxui::Rect heroDest = atZoom({0.f, 0.f, g_lockW, g_lockH}, bgZoom);
             const float tw = static_cast<float>(m_heroTex.width());

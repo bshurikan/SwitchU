@@ -1,6 +1,7 @@
 #include "WiiUMenuApp.hpp"
 #include "icons/IconPackInstaller.hpp"
 #include "icons/IconPackManager.hpp"
+#include "themeshop/InstallStamp.hpp"
 #include "themeshop/ThemePackageInstaller.hpp"
 #include "themeshop/ThemeHttp.hpp"
 #include "widgets/AdaptiveIconLoad.hpp"
@@ -296,6 +297,7 @@ void WiiUMenuApp::createSettings() {
     m_settings->setFont(&m_fontNormal);
     m_settings->setSmallFont(&m_fontSmall);
     m_settings->setTheme(&m_theme);
+    m_settings->setCanvasSize(m_homeLayout.logicalW(), m_homeLayout.logicalH());
     m_settings->setInstantCursorMotion(m_config.cursorMotionMode == 1);
     m_settings->setWireframeState(m_showWireframe);
     m_settings->setHomeOrientationState(m_config.homeOrientation,
@@ -352,6 +354,10 @@ void WiiUMenuApp::createSettings() {
             m_settings->setHomeOrientationState(m_config.homeOrientation,
                                                 m_config.homeOrientationButton,
                                                 m_config.homeOrientationCycle);
+            // Rebuild chrome for the new canvas; stash/restore keeps Display
+            // focus + scroll (cancels if the user leaves that tab early).
+            if (m_settings->isActive())
+                m_settingsNeedRefresh = true;
         }
     });
     m_settings->onHomeOrientationButtonChange([this](bool enabled) {
@@ -1696,6 +1702,7 @@ void WiiUMenuApp::createGameOptions() {
     m_gameOptions->setFont(&m_fontNormal);
     m_gameOptions->setSmallFont(&m_fontSmall);
     m_gameOptions->setTheme(&m_theme);
+    m_gameOptions->setCanvasSize(m_homeLayout.logicalW(), m_homeLayout.logicalH());
     m_gameOptions->setInstantCursorMotion(m_config.cursorMotionMode == 1);
     m_gameOptions->setAccessibilityVoiceEnabled(m_config.accessibilityEnabled);
     m_gameOptions->setAccessibilitySpeechPreferences(m_config.accessibilitySpeakHints,
@@ -1727,6 +1734,7 @@ void WiiUMenuApp::createFolderOptions() {
     m_folderOptions->setFont(&m_fontNormal);
     m_folderOptions->setSmallFont(&m_fontSmall);
     m_folderOptions->setTheme(&m_theme);
+    m_folderOptions->setCanvasSize(m_homeLayout.logicalW(), m_homeLayout.logicalH());
     m_folderOptions->setInstantCursorMotion(m_config.cursorMotionMode == 1);
     m_folderOptions->setAccessibilityVoiceEnabled(m_config.accessibilityEnabled);
     m_folderOptions->setAccessibilitySpeechPreferences(m_config.accessibilitySpeakHints,
@@ -1870,6 +1878,7 @@ void WiiUMenuApp::createControllerTest() {
     m_controllerTest->setFont(&m_fontNormal);
     m_controllerTest->setSmallFont(&m_fontSmall);
     m_controllerTest->setTheme(&m_theme);
+    m_controllerTest->setCanvasSize(m_homeLayout.logicalW(), m_homeLayout.logicalH());
     m_controllerTest->setInput(&app().input());
     m_controllerTest->onCloseSfx([this]() { m_audio.playSfx(Sfx::ModalHide); });
     m_controllerTest->onAccessibilityAnnouncement([this](const std::string& text) {
@@ -1894,6 +1903,7 @@ void WiiUMenuApp::createProfileCarousel() {
     m_profileCarousel->setFont(&m_fontNormal);
     m_profileCarousel->setSmallFont(&m_fontSmall);
     m_profileCarousel->setTheme(&m_theme);
+    m_profileCarousel->setCanvasSize(m_homeLayout.logicalW(), m_homeLayout.logicalH());
     m_profileCarousel->onNavigateSfx([this]() { m_audio.playSfx(Sfx::Navigate); });
     m_profileCarousel->onLockSfx([this]() { m_audio.playSfx(Sfx::ConfirmPositive); });
     m_profileCarousel->onCloseSfx([this]() { m_audio.playSfx(Sfx::ModalHide); });
@@ -2043,6 +2053,7 @@ void WiiUMenuApp::createThemeShop() {
     m_themeShop->setFont(&m_fontNormal);
     m_themeShop->setSmallFont(&m_fontSmall);
     m_themeShop->setTheme(&m_theme);
+    m_themeShop->setCanvasSize(m_homeLayout.logicalW(), m_homeLayout.logicalH());
     m_themeShop->setInstantCursorMotion(m_config.cursorMotionMode == 1);
     m_themeShop->setThreadPool(&m_threadPool);
     m_themeShop->setRenderContext(&app().gpu(), &app().renderer());
@@ -2948,6 +2959,8 @@ std::vector<ThemeShopScreen::ThemeShopEntry> WiiUMenuApp::buildThemeShopEntries(
             const std::string root = soundBase.empty() ? preset.installPath : soundBase;
             entry.hasMusic = pathExists(root + "/music");
             entry.hasSounds = pathExists(root + "/sfx");
+            // Sidecar from Theme Shop install, else theme.json / folder mtime.
+            entry.sortStamp = themeshop::resolveSortStamp(preset.installPath, "theme.json");
         }
         entries.push_back(std::move(entry));
     }
@@ -3067,6 +3080,9 @@ std::vector<ThemeShopScreen::ThemeShopEntry> WiiUMenuApp::buildIconPackEntries()
         entry.installed = true;
         entry.removable = !pack.fromTheme && !entry.builtin;
         entry.colourPack = pack.colourPack;
+        if (!pack.directory.empty()) {
+            entry.sortStamp = themeshop::resolveSortStamp(pack.directory, "pack.json");
+        }
         entries.push_back(std::move(entry));
     };
 
@@ -3109,6 +3125,8 @@ std::vector<ThemeShopScreen::ThemeShopEntry> WiiUMenuApp::buildIconPackEntries()
                 // Keep both: Installed shelf uses coverPath (live mosaic + tint);
                 // Icon Shop uses coverUrl (vanilla catalog art).
                 existing->coverUrl = resolveCoverUrl(icon.cover);
+                // Keep local install/mtime stamp for installed packs; catalog
+                // dates are only for packs not yet on the console.
                 continue;
             }
             // Catalog row whose theme companion is already installed as another id.
@@ -3141,6 +3159,7 @@ std::vector<ThemeShopScreen::ThemeShopEntry> WiiUMenuApp::buildIconPackEntries()
             entry.colourPack = icon.colour;
             entry.source = "Shop";
             entry.coverUrl = resolveCoverUrl(icon.cover);
+            entry.sortStamp = icon.sortStamp;
             entries.push_back(std::move(entry));
         }
     }

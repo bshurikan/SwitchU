@@ -462,9 +462,10 @@ nxui::Rect IconGrid::dynamicIconRect(int index, float* outScale,
                                      float* outOpacity,
                                      float* outDistance) const {
     const float centerX = m_rect.x + m_rect.width * 0.5f;
-    // Unfocused row sits in the lower half; a focused Poster rises to true
-    // vertical centre so the title pill has equal air above/below.
-    const float lineCenterY = m_rect.y + m_rect.height * 0.66f;
+    // Logos on: sit in the lower half so the logo band stays clear. Logos off:
+    // true mid-band so tiles/posters feel centered (HOME + folders).
+    const float lineCenterY = m_rect.y
+        + m_rect.height * (m_lineVerticallyCentered ? 0.50f : 0.66f);
     const float offset = m_lineScrollOffset.value();
     // Carousel sizing is independent of grid density. Square icons stay square;
     // apps with a Poster and folders (when posters are enabled) use tall 2:3.

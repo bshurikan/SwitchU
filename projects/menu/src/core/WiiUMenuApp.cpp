@@ -1467,7 +1467,9 @@ void WiiUMenuApp::applyHomeOrientationState(bool saveConfig) {
     // on that ghost under the new portrait projector.
     nxui::Widget* prevFocus = focusManager().current();
     int preserveGridIdx = -1;
+    std::uint64_t preserveTitleId = 0;
     if (m_grid && prevFocus && prevFocus->tag() == "glossy_icon") {
+        preserveTitleId = static_cast<GlossyIcon*>(prevFocus)->titleId();
         const auto& icons = m_grid->allIcons();
         for (int i = 0; i < static_cast<int>(icons.size()); ++i) {
             if (icons[static_cast<std::size_t>(i)].get() == prevFocus) {
@@ -1486,7 +1488,19 @@ void WiiUMenuApp::applyHomeOrientationState(bool saveConfig) {
     placeTitlePill();
     wireProfileLockNavigation();
 
-    if (preserveGridIdx >= 0 && m_grid) {
+    // Open folders use a different grid (and glass panel) per orientation —
+    // rebuild the model + chrome so portrait 3×N / landscape N×M don't stick.
+    if (m_openFolderId != 0 && m_grid) {
+        applyDisplayModel(buildOpenFolderModel(m_openFolderId), preserveTitleId,
+                          false, {}, true);
+        refreshOpenFolderChrome();
+        configureDynamicLineNavigation();
+        syncPageIndicator();
+        if (m_steamGridDbBackdrop) {
+            m_steamGridDbBackdrop->setLayoutMode(m_appLayoutMode);
+            showFocusedSteamGridDbArtwork(false);
+        }
+    } else if (preserveGridIdx >= 0 && m_grid) {
         if (m_grid->focusGlobalIndex(preserveGridIdx, true)) {
             if (auto* cur = m_grid->focusManager().current())
                 focusManager().setFocus(cur);
@@ -1625,6 +1639,14 @@ void WiiUMenuApp::reflowHomeShell() {
     if (m_launchAnim) m_launchAnim->setCanvasSize(canvasW, canvasH);
     if (m_folderBackdrop) m_folderBackdrop->setCanvasSize(canvasW, canvasH);
     if (m_quickSettings) m_quickSettings->setCanvasSize(canvasW, canvasH);
+    if (m_gameOptions) m_gameOptions->setCanvasSize(canvasW, canvasH);
+    if (m_folderOptions) m_folderOptions->setCanvasSize(canvasW, canvasH);
+    if (m_settings) m_settings->setCanvasSize(canvasW, canvasH);
+    if (m_themeShop) m_themeShop->setCanvasSize(canvasW, canvasH);
+    if (m_steamGridDbPicker) m_steamGridDbPicker->setCanvasSize(canvasW, canvasH);
+    if (m_controllerTest) m_controllerTest->setCanvasSize(canvasW, canvasH);
+    if (m_profileCarousel) m_profileCarousel->setCanvasSize(canvasW, canvasH);
+    if (m_textEntry) m_textEntry->setCanvasSize(canvasW, canvasH);
 
     // Portrait single-row keeps side columns (SidebarManager skips the top strip).
     const bool dynamicLine = m_appLayoutMode == AppLayoutMode::DynamicLine
@@ -1989,7 +2011,8 @@ WiiUMenuApp::GridLayoutMetrics WiiUMenuApp::computeGridLayoutMetrics() const {
 WiiUMenuApp::GridLayoutMetrics WiiUMenuApp::computeGridLayoutMetrics(int cols,
                                                                       int rows) const {
     cols = std::clamp(cols, 1, 8);
-    rows = std::clamp(rows, 1, 5);
+    // Folders in portrait can be 4×6 (Large); HOME stays ≤5 via activeGridRows.
+    rows = std::clamp(rows, 1, 8);
 
     const float baseGridW = cols * kGridBaseCellW + (cols - 1) * kGridBasePadX;
     const float baseGridH = rows * kGridBaseCellH + (rows - 1) * kGridBasePadY;
@@ -2035,7 +2058,10 @@ std::pair<int, int> WiiUMenuApp::folderViewDimensions(std::uint32_t folderId) co
     const auto stored = folderGridDimensions(folderId);
     if (!m_homeLayout.isPortrait())
         return stored;
-    // Mirror HOME: landscape 4×2 / 5×3 / 6×4 → portrait 3×N (same tile budget).
+    // Landscape 4×2 / 5×3 / 6×4. Large (24 tiles) was 3×8 — too chunky in
+    // portrait; use 4×6. Small/Medium stay 3×N.
+    if (stored.first == 6 && stored.second == 4)
+        return {4, 6};
     const int tiles = std::max(1, stored.first * stored.second);
     constexpr int kPortraitCols = 3;
     const int rows = std::max(2, (tiles + kPortraitCols - 1) / kPortraitCols);
@@ -3120,6 +3146,7 @@ void WiiUMenuApp::createTextEntry() {
     m_textEntry->setFont(&m_fontNormal);
     m_textEntry->setSmallFont(&m_fontSmall);
     m_textEntry->setTheme(&m_theme);
+    m_textEntry->setCanvasSize(m_homeLayout.logicalW(), m_homeLayout.logicalH());
     m_textEntry->onKeySfx([this]() { m_audio.playSfx(Sfx::Activate); });
     m_textEntry->onNavigateSfx([this]() { m_audio.playSfx(Sfx::Navigate); });
     m_textEntry->onCloseSfx([this]() { m_audio.playSfx(Sfx::ModalHide); });
@@ -3156,6 +3183,7 @@ void WiiUMenuApp::requestTextEntry(
     });
     m_textEntry->onCancel(restoreFocus);
     m_audio.playSfx(Sfx::ModalShow);
+    m_textEntry->setCanvasSize(m_homeLayout.logicalW(), m_homeLayout.logicalH());
     m_textEntry->show({title, guide, initial, std::max(1, maxLength), password});
     focusManager().setFocus(m_textEntry.get());
     if (m_cursor) m_cursor->setVisible(false);
@@ -5562,8 +5590,12 @@ void WiiUMenuApp::placeFolderHeader(const nxui::Rect& panel) {
 void WiiUMenuApp::syncSteamGridDbLogoArea() {
     if (!m_steamGridDbBackdrop)
         return;
-    m_steamGridDbBackdrop->setShowLogo(m_config.steamGridDbEnabled
-                                       && m_config.steamGridDbShowLogoInDynamicLine);
+    const bool logosOn = m_config.steamGridDbEnabled
+        && m_config.steamGridDbShowLogoInDynamicLine;
+    m_steamGridDbBackdrop->setShowLogo(logosOn);
+    // Single-row (HOME + folders): center tiles when logos are off.
+    if (m_grid)
+        m_grid->setLineVerticallyCentered(!logosOn);
     const nxui::Rect kCenteredLogo{370.f, 149.f, 540.f, 150.f};
 
     // Portrait single-row: top-centred logo under the applet strip (~2× the
@@ -7280,6 +7312,7 @@ void WiiUMenuApp::buildGrid() {
         if (m_settings && m_settings->isActive())
             m_settings->hide();
         refreshThemeShopState();
+        m_themeShop->setCanvasSize(m_homeLayout.logicalW(), m_homeLayout.logicalH());
         m_themeShop->show();
         focusManager().setFocus(m_themeShop.get());
     };
@@ -7398,6 +7431,7 @@ void WiiUMenuApp::buildGrid() {
     m_steamGridDbPicker->setFont(&m_fontNormal);
     m_steamGridDbPicker->setSmallFont(&m_fontSmall);
     m_steamGridDbPicker->setTheme(&m_theme);
+    m_steamGridDbPicker->setCanvasSize(m_homeLayout.logicalW(), m_homeLayout.logicalH());
     m_steamGridDbPicker->onClosed([this]() {
         if (m_gameOptions && m_gameOptions->isActive())
             focusManager().setFocus(m_gameOptions.get());

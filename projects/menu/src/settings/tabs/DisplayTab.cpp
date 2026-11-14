@@ -170,6 +170,35 @@ SettingsScreen::Tab settings::tabs::DisplayTab::build(SettingsScreen& screen) {
 
     {
         SettingItem it;
+        it.label = i18n.tr("settings.display.orientation", "HOME Orientation");
+        it.description = i18n.tr("settings.display.orientation_desc",
+            "Rotate the HOME menu. Useful for TATE-only setups without the HOME button.");
+        it.type = ItemType::Selector;
+        it.options = {
+            i18n.tr("settings.display.cycle_landscape", "Landscape"),
+            i18n.tr("settings.display.cycle_rot90", "Portrait (90°)"),
+            i18n.tr("settings.display.cycle_rot180", "Landscape Flipped (180°)"),
+            i18n.tr("settings.display.cycle_rot270", "Portrait Flipped (270°)"),
+        };
+        it.intVal = std::clamp(static_cast<int>(screen.m_homeOrientation), 0, 3);
+        it.onChange = [&screen](SettingItem& self) {
+            const auto orient = static_cast<HomeOrientation>(
+                std::clamp(self.intVal, 0, 3));
+            if (orient == screen.m_homeOrientation)
+                return;
+            screen.m_homeOrientation = orient;
+            screen.m_homeOrientationCycle = sanitizeHomeOrientationCycle(
+                screen.m_homeOrientationCycle,
+                screen.m_homeOrientation,
+                screen.m_homeOrientationButton);
+            if (screen.m_homeOrientationCb)
+                screen.m_homeOrientationCb(orient);
+        };
+        t.items.push_back(std::move(it));
+    }
+
+    {
+        SettingItem it;
         it.label = i18n.tr("settings.display.orientation_button", "HOME Orientation Button");
         it.description = i18n.tr("settings.display.orientation_button_desc",
             "Cycle orientation button next to Change View on HOME.");
@@ -235,7 +264,7 @@ SettingsScreen::Tab settings::tabs::DisplayTab::build(SettingsScreen& screen) {
     // rebuild, so scroll/focus stay put (including early exit from Settings).
     t.onUpdate = [](SettingsScreen::Tab& current, TabbedOverlayScreen& base) {
         auto& owner = static_cast<SettingsScreen&>(base);
-        // ui_wireframe, orientation button, then 4 cycle toggles.
+        // … orientation selector, orientation button, then 4 cycle toggles.
         if (current.items.size() < 6)
             return;
         for (std::size_t i = current.items.size() - 4; i < current.items.size(); ++i) {
