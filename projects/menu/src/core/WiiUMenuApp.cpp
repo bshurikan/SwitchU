@@ -11488,7 +11488,6 @@ std::vector<WiiUMenuApp::ActionHint> WiiUMenuApp::buildScreenActionHints() {
 
     if (m_quickSettings && m_quickSettings->isActive()) {
         if (m_quickSettings->isCoverFullscreen()) {
-            add(dpadGlyph(), i18n.tr("hint.navigate", "Navigate"));
             add(buttonGlyph(nxui::Button::A), i18n.tr("hint.select", "Select"));
             add(buttonGlyph(nxui::Button::ZL), i18n.tr("quicksettings.prev", "Prev"));
             add(buttonGlyph(nxui::Button::ZR), i18n.tr("quicksettings.next", "Next"));
@@ -11504,7 +11503,6 @@ std::vector<WiiUMenuApp::ActionHint> WiiUMenuApp::buildScreenActionHints() {
             add(buttonGlyph(nxui::Button::A), i18n.tr("hint.place", "Place"));
             add(buttonGlyph(nxui::Button::B), i18n.tr("hint.cancel", "Cancel"));
         } else if (m_quickSettings->isPlaylistOpen()) {
-            add(dpadGlyph(), i18n.tr("hint.navigate", "Navigate"));
             add(buttonGlyph(nxui::Button::A), i18n.tr("hint.select", "Select"));
             if (!m_quickSettings->hasAlbumFolders())
                 add(buttonGlyph(nxui::Button::Y), i18n.tr("hint.move", "Move"));
@@ -11528,7 +11526,6 @@ std::vector<WiiUMenuApp::ActionHint> WiiUMenuApp::buildScreenActionHints() {
         return hints;
 
     if (m_contextMenu && m_contextMenu->isActive()) {
-        add(dpadGlyph(), i18n.tr("hint.navigate", "Navigate"));
         add(buttonGlyph(nxui::Button::A), i18n.tr("hint.select", "Select"));
         add(buttonGlyph(nxui::Button::B), i18n.tr("hint.back", "Back"));
         return hints;
@@ -11548,7 +11545,6 @@ std::vector<WiiUMenuApp::ActionHint> WiiUMenuApp::buildScreenActionHints() {
     }
 
     if (m_userSelect && m_userSelect->isActive()) {
-        add(dpadGlyph(), i18n.tr("hint.navigate", "Navigate"));
         add(buttonGlyph(nxui::Button::A), i18n.tr("hint.select", "Select"));
         add(buttonGlyph(nxui::Button::B), i18n.tr("hint.back", "Back"));
         addVoiceControls();
@@ -11556,7 +11552,6 @@ std::vector<WiiUMenuApp::ActionHint> WiiUMenuApp::buildScreenActionHints() {
     }
 
     if (m_steamGridDbPicker && m_steamGridDbPicker->isActive()) {
-        add(dpadGlyph(), i18n.tr("hint.navigate", "Navigate"));
         add(buttonGlyph(nxui::Button::A), i18n.tr("hint.select", "Select"));
         add(buttonGlyph(nxui::Button::B), i18n.tr("hint.back", "Back"));
         add(buttonGlyph(nxui::Button::X), i18n.tr("hint.search", "Search"));
@@ -11564,7 +11559,6 @@ std::vector<WiiUMenuApp::ActionHint> WiiUMenuApp::buildScreenActionHints() {
     }
 
     if (m_themeShop && m_themeShop->isActive()) {
-        add(dpadGlyph(), i18n.tr("hint.navigate", "Navigate"));
         add(buttonGlyph(nxui::Button::A), i18n.tr("hint.select", "Select"));
         add(buttonGlyph(nxui::Button::B), i18n.tr("hint.back", "Back"));
         add(buttonGlyph(nxui::Button::X), i18n.tr("hint.search", "Search"));
@@ -11578,7 +11572,6 @@ std::vector<WiiUMenuApp::ActionHint> WiiUMenuApp::buildScreenActionHints() {
     if (m_profileCarousel && m_profileCarousel->isActive()) {
         using Kind = ProfileCarouselScreen::CardKind;
         const Kind kind = m_profileCarousel->selectedKind();
-        add(dpadGlyph(), i18n.tr("hint.navigate", "Navigate"));
         if (kind == Kind::Profile)
             add(buttonGlyph(nxui::Button::A), i18n.tr("profilelock.open_profile", "View profile"));
         else if (kind == Kind::AddUser)
@@ -11592,14 +11585,16 @@ std::vector<WiiUMenuApp::ActionHint> WiiUMenuApp::buildScreenActionHints() {
         return hints;
     }
 
-    if (m_gameOptions && m_gameOptions->isActive())
+    if (m_gameOptions && m_gameOptions->isActive()) {
+        add(buttonGlyph(nxui::Button::B), i18n.tr("hint.back", "Back"));
+        add(buttonGlyph(nxui::Button::A), i18n.tr("hint.select", "Select"));
         return hints;
+    }
 
     if (m_folderOptions && m_folderOptions->isActive())
         return hints;
 
     if (m_settings && m_settings->isActive()) {
-        add(dpadGlyph(), i18n.tr("hint.navigate", "Navigate"));
         add(buttonGlyph(nxui::Button::A), i18n.tr("hint.select", "Select"));
         add(buttonGlyph(nxui::Button::B), i18n.tr("hint.back", "Back"));
         addVoiceControls();
@@ -11780,11 +11775,21 @@ void WiiUMenuApp::renderActionHintBar(nxui::Renderer& ren) {
     if (count <= 0)
         return;
 
-    // QS-only (no playlist sheet): always one row — a second row sits on the
-    // power buttons.
+    // QS (no playlist sheet) and settings-like windows: one right-aligned row
+    // so a second column cannot climb into the panel chrome.
     const bool qsForceOneRow = m_quickSettings && m_quickSettings->isActive()
         && !m_quickSettings->isCoverFullscreen()
         && !m_quickSettings->isPlaylistOpen();
+    const bool windowForceOneRow =
+        (m_settings && m_settings->isActive())
+        || (m_themeShop && m_themeShop->isActive())
+        || (m_gameOptions && m_gameOptions->isActive())
+        || (m_folderOptions && m_folderOptions->isActive())
+        || (m_profileCarousel && m_profileCarousel->isActive())
+        || (m_steamGridDbPicker && m_steamGridDbPicker->isActive())
+        || (m_controllerTest && m_controllerTest->isActive())
+        || (m_heroCustomize && m_heroCustomize->isActive());
+    const bool forceOneRow = qsForceOneRow || windowForceOneRow;
     const float canvasW = m_homeLayout.logicalW();
     const float canvasH = m_homeLayout.logicalH();
     const bool portrait = m_homeLayout.isPortrait();
@@ -11876,10 +11881,10 @@ void WiiUMenuApp::renderActionHintBar(nxui::Renderer& ren) {
         ren.popClipRect();
     };
 
-    if (portrait || qsForceOneRow) {
+    if (portrait || forceOneRow) {
         // One row, controller order. Portrait: keep Info first, then the face
-        // buttons, then whatever else fits; QS has the full width.
-        const float rowMax = qsForceOneRow ? 4096.f : canvasW - 2.f * kHintEdgeX;
+        // buttons, then whatever else fits; QS/windows use the full width.
+        const float rowMax = forceOneRow ? 4096.f : canvasW - 2.f * kHintEdgeX;
         std::vector<bool> keep(slots.size(), false);
         float used = 0.f;
         auto tryAdd = [&](size_t i) {
@@ -11905,7 +11910,7 @@ void WiiUMenuApp::renderActionHintBar(nxui::Renderer& ren) {
             rowW += slots[i].cap->width + (firstKept ? 0.f : kHintCapGap);
             firstKept = false;
         }
-        float x = qsForceOneRow ? canvasW - kHintEdgeX - rowW : (canvasW - rowW) * 0.5f;
+        float x = forceOneRow ? canvasW - kHintEdgeX - rowW : (canvasW - rowW) * 0.5f;
         const float y = canvasH - kHintEdgeY - kHintCapH + (1.f - reveal) * 4.f;
         for (size_t i = 0; i < slots.size(); ++i) {
             if (!keep[i]) continue;
