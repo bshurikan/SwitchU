@@ -5107,7 +5107,17 @@ nxui::Rect WiiUMenuApp::folderTileRect(std::uint32_t folderId) const {
 void WiiUMenuApp::syncPageIndicator() {
     if (!m_pageIndicator || !m_grid)
         return;
-    if (m_appLayoutMode == AppLayoutMode::DynamicLine) {
+    // Hide under settings-like windows (same predicate as one-row legend).
+    const bool windowOpen =
+        (m_settings && m_settings->isActive())
+        || (m_themeShop && m_themeShop->isActive())
+        || (m_gameOptions && m_gameOptions->isActive())
+        || (m_folderOptions && m_folderOptions->isActive())
+        || (m_profileCarousel && m_profileCarousel->isActive())
+        || (m_steamGridDbPicker && m_steamGridDbPicker->isActive())
+        || (m_controllerTest && m_controllerTest->isActive())
+        || (m_heroCustomize && m_heroCustomize->isActive());
+    if (m_appLayoutMode == AppLayoutMode::DynamicLine || windowOpen) {
         m_pageIndicator->setVisible(false);
         return;
     }
