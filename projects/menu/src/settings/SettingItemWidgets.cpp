@@ -797,20 +797,18 @@ class SelectorRowWidget final : public SettingRowBase {
 public:
     SelectorRowWidget(SettingsScreen::SettingItem& item, const SettingWidgetContext& ctx)
         : SettingRowBase(item, ctx) {
-        m_pill = std::make_shared<nxui::GlassBox>(nxui::Axis::ROW);
-        m_pill->setPadding(8.f, 12.f, 8.f, 12.f);
-        m_pill->setAlignItems(nxui::AlignItems::CENTER);
-        m_pill->setJustifyContent(nxui::JustifyContent::SPACE_BETWEEN);
-        m_pill->setCornerRadius(11.f);
-
         m_value = std::make_shared<nxui::Label>("");
         m_value->setScale(0.82f);
-        m_value->setGrow(1.f);
-        m_value->setHAlign(nxui::Label::HAlign::Left);
+        m_value->setHAlign(nxui::Label::HAlign::Right);
         m_value->setVAlign(nxui::Label::VAlign::Center);
 
-        m_pill->addChild(m_value);
-        m_right->addChild(m_pill);
+        m_chevron = std::make_shared<nxui::Label>("\u203A"); // ›
+        m_chevron->setScale(0.82f);
+        m_chevron->setHAlign(nxui::Label::HAlign::Left);
+        m_chevron->setVAlign(nxui::Label::VAlign::Center);
+
+        m_right->addChild(m_value);
+        m_right->addChild(m_chevron);
     }
 protected:
     float preferredRightWidth(float rowWidth) const override {
@@ -820,40 +818,58 @@ protected:
     void syncRight(const nxui::Rect& rightRect) override {
         nxui::Font* rowSmallFont = smallFont();
         const nxui::Theme* rowTheme = theme();
+        constexpr float kValueScale = 0.82f;
+        constexpr float kChevronGap = 6.f;
 
         int idx = std::clamp(m_item.intVal, 0, std::max(0, (int)m_item.options.size() - 1));
         float w = std::max(170.f, rightRect.width);
         float h = std::max(36.f, rect().height - 22.f);
-        nxui::Rect pillRect = {
+        nxui::Rect area = {
             rightRect.right() - w,
             rightRect.y + (rightRect.height - h) * 0.5f,
             w,
             h
         };
 
+        float chevronW = 10.f;
+        if (rowSmallFont) {
+            chevronW = std::max(8.f, rowSmallFont->measure("\u203A").x * kValueScale);
+        }
+        const float valueMaxW = std::max(0.f, area.width - chevronW - kChevronGap);
+
         std::string text = m_item.options.empty() ? std::string() : m_item.options[idx];
-        text = fitTextToWidth(rowSmallFont, text, 0.82f, std::max(0.f, pillRect.width - 24.f));
+        text = fitTextToWidth(rowSmallFont, text, kValueScale, valueMaxW);
         if (text != m_cachedValueText) {
             m_cachedValueText = text;
             m_value->setText(m_cachedValueText);
         }
         if (rowSmallFont != m_cachedFont) {
             m_cachedFont = rowSmallFont;
-            if (rowSmallFont)
+            if (rowSmallFont) {
                 m_value->setFont(rowSmallFont);
+                m_chevron->setFont(rowSmallFont);
+            }
         }
         if (rowTheme) {
-            m_pill->setBaseColor(rowTheme->panelBase.withAlpha(0.42f * opacity()));
-            m_pill->setBorderColor(rowTheme->panelBorder.withAlpha(0.5f * opacity()));
-            m_value->setTextColor(rowTheme->textPrimary);
+            m_value->setTextColor(rowTheme->cursorNormal);
+            m_chevron->setTextColor(rowTheme->textSecondary);
         }
-        m_pill->setRect(pillRect);
+
+        float valueW = 0.f;
+        if (rowSmallFont && !m_cachedValueText.empty())
+            valueW = rowSmallFont->measure(m_cachedValueText).x * kValueScale;
+        valueW = std::min(valueW, valueMaxW);
+
+        const float chevronX = area.right() - chevronW;
+        const float valueX = chevronX - kChevronGap - valueW;
         m_value->setOpacity(opacity());
-        m_value->setRect({pillRect.x + 12.f, pillRect.y, std::max(0.f, pillRect.width - 24.f), pillRect.height});
+        m_chevron->setOpacity(opacity());
+        m_value->setRect({valueX, area.y, valueW, area.height});
+        m_chevron->setRect({chevronX, area.y, chevronW, area.height});
     }
 private:
-    std::shared_ptr<nxui::GlassBox> m_pill;
     std::shared_ptr<nxui::Label> m_value;
+    std::shared_ptr<nxui::Label> m_chevron;
     nxui::Font* m_cachedFont = nullptr;
     std::string m_cachedValueText;
 };
