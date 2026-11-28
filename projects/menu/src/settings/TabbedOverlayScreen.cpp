@@ -190,12 +190,7 @@ protected:
             return;
         }
 
-        float accentH = std::max(16.f, r.height * 0.46f);
-        float accentY = r.y + (r.height - accentH) * 0.5f;
-        float accentW = std::clamp(m_accentWidth, 2.f, std::max(2.f, r.width * 0.12f));
-        nxui::Rect accent = {r.x + 8.f, accentY, accentW, accentH};
-        ren.drawRoundedRect(accent, m_accentColor.withAlpha(0.92f * opacity()), 2.f);
-
+        // Selected state is the wash + focus outline (no extra left accent bar).
         nxui::Rect underline = {r.x + 16.f, r.bottom() - 5.f, std::max(24.f, r.width - 32.f), 2.f};
         ren.drawRoundedRect(underline, m_accentColor.withAlpha(0.18f * opacity()), 1.f);
     }
