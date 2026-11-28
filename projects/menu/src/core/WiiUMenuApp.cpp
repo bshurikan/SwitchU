@@ -667,13 +667,17 @@ bool WiiUMenuApp::hasActiveLeaveCaptureOverlay() const {
         || (m_textEntry && m_textEntry->isActive())
         || (m_progressDialog && m_progressDialog->isActive())
         || m_lockViewActive
-        || (m_settings && m_settings->isActive())
+        || settingsLikeWindowActive();
+}
+
+bool WiiUMenuApp::settingsLikeWindowActive() const {
+    return (m_settings && m_settings->isActive())
         || (m_themeShop && m_themeShop->isActive())
         || (m_gameOptions && m_gameOptions->isActive())
         || (m_folderOptions && m_folderOptions->isActive())
-        || (m_controllerTest && m_controllerTest->isActive())
         || (m_profileCarousel && m_profileCarousel->isActive())
         || (m_steamGridDbPicker && m_steamGridDbPicker->isActive())
+        || (m_controllerTest && m_controllerTest->isActive())
         || (m_heroCustomize && m_heroCustomize->isActive());
 }
 
@@ -5107,17 +5111,7 @@ nxui::Rect WiiUMenuApp::folderTileRect(std::uint32_t folderId) const {
 void WiiUMenuApp::syncPageIndicator() {
     if (!m_pageIndicator || !m_grid)
         return;
-    // Hide under settings-like windows (same predicate as one-row legend).
-    const bool windowOpen =
-        (m_settings && m_settings->isActive())
-        || (m_themeShop && m_themeShop->isActive())
-        || (m_gameOptions && m_gameOptions->isActive())
-        || (m_folderOptions && m_folderOptions->isActive())
-        || (m_profileCarousel && m_profileCarousel->isActive())
-        || (m_steamGridDbPicker && m_steamGridDbPicker->isActive())
-        || (m_controllerTest && m_controllerTest->isActive())
-        || (m_heroCustomize && m_heroCustomize->isActive());
-    if (m_appLayoutMode == AppLayoutMode::DynamicLine || windowOpen) {
+    if (m_appLayoutMode == AppLayoutMode::DynamicLine || settingsLikeWindowActive()) {
         m_pageIndicator->setVisible(false);
         return;
     }
@@ -11601,8 +11595,11 @@ std::vector<WiiUMenuApp::ActionHint> WiiUMenuApp::buildScreenActionHints() {
         return hints;
     }
 
-    if (m_folderOptions && m_folderOptions->isActive())
+    if (m_folderOptions && m_folderOptions->isActive()) {
+        add(buttonGlyph(nxui::Button::B), i18n.tr("hint.back", "Back"));
+        add(buttonGlyph(nxui::Button::A), i18n.tr("hint.select", "Select"));
         return hints;
+    }
 
     if (m_settings && m_settings->isActive()) {
         add(buttonGlyph(nxui::Button::A), i18n.tr("hint.select", "Select"));
@@ -11790,16 +11787,7 @@ void WiiUMenuApp::renderActionHintBar(nxui::Renderer& ren) {
     const bool qsForceOneRow = m_quickSettings && m_quickSettings->isActive()
         && !m_quickSettings->isCoverFullscreen()
         && !m_quickSettings->isPlaylistOpen();
-    const bool windowForceOneRow =
-        (m_settings && m_settings->isActive())
-        || (m_themeShop && m_themeShop->isActive())
-        || (m_gameOptions && m_gameOptions->isActive())
-        || (m_folderOptions && m_folderOptions->isActive())
-        || (m_profileCarousel && m_profileCarousel->isActive())
-        || (m_steamGridDbPicker && m_steamGridDbPicker->isActive())
-        || (m_controllerTest && m_controllerTest->isActive())
-        || (m_heroCustomize && m_heroCustomize->isActive());
-    const bool forceOneRow = qsForceOneRow || windowForceOneRow;
+    const bool forceOneRow = qsForceOneRow || settingsLikeWindowActive();
     const float canvasW = m_homeLayout.logicalW();
     const float canvasH = m_homeLayout.logicalH();
     const bool portrait = m_homeLayout.isPortrait();

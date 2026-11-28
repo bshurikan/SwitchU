@@ -257,6 +257,8 @@ private:
     void scheduleLeaveCapture(std::function<void()> afterCapture,
                               std::uint64_t previewSuspendedTitleId = 0);
     bool hasActiveLeaveCaptureOverlay() const;
+    /// Settings / Theme Shop / Game·Folder Options and related tabbed windows.
+    bool settingsLikeWindowActive() const;
     void pollDeferredLeaveCapture();
     /// Visual-only suspended outline for leave-frame capture (no focus move).
     void setSuspendedIconVisuals(std::uint64_t titleId);
