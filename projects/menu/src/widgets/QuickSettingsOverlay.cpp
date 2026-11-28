@@ -3552,13 +3552,14 @@ void QuickSettingsOverlay::render(nxui::Renderer& ren) {
 
     {
         const bool ftEngaged = m_frameTapLiteEngaged;
+        // Keep full contrast while FT owns lite; toggle is still denied in activate().
         drawToggle(ItemIndex::BatterySaver,
                    ftEngaged
                        ? i18n.tr("quicksettings.frame_tap_engaged", "Frame Tap Engaged")
                        : i18n.tr("quicksettings.battery_saver", "Battery Saver"),
                    m_batterySaver || ftEngaged,
                    false,
-                   ftEngaged);
+                   false);
     }
 
     drawToggle(ItemIndex::AirplaneMode,
