@@ -3264,20 +3264,49 @@ void QuickSettingsOverlay::render(nxui::Renderer& ren) {
                      m_smallFont, badgeCol, 0.72f);
     }
 
+    auto stripLeadingQsGlyph = [](std::string s) {
+        static const char* kGlyphs[] = {
+            "\xE2\x99\xAB", // ♫
+            "\xE2\x99\xAA", // ♪
+            "\xE2\x98\x80", // ☀
+        };
+        for (const char* g : kGlyphs) {
+            const size_t n = std::strlen(g);
+            if (s.size() >= n && s.compare(0, n, g) == 0) {
+                s.erase(0, n);
+                while (!s.empty() && s.front() == ' ')
+                    s.erase(s.begin());
+                break;
+            }
+        }
+        return s;
+    };
+
     auto drawSlider = [&](ItemIndex idx, const std::string& label, float value,
-                          const nxui::Color& fillColor) {
+                          const nxui::Color& fillColor, std::uint32_t iconCp = 0) {
         nxui::Rect card = computeItemRect(idx);
         ren.drawRoundedRect(card, cardFill, 12.f);
         ren.drawRoundedRectOutline(card, neutralBorder, 12.f, 1.f);
 
         if (m_smallFont) {
-            ren.drawText(label, {card.x + 12.f, card.y + 8.f}, m_smallFont,
+            std::string shown = stripLeadingQsGlyph(label);
+            float textX = card.x + 12.f;
+            const float labelY = card.y + 8.f;
+            if (iconCp != 0) {
+                const float edge = 18.f;
+                const float iconX = card.x + 12.f + edge * 0.5f;
+                const float iconY = labelY + m_smallFont->measure("Ay").y * kSliderLabelScale * 0.5f;
+                if (switchu::material::drawCentered(ren, m_iconFont, iconCp,
+                                                    {iconX, iconY}, primaryText, edge))
+                    textX = iconX + edge * 0.5f + 6.f;
+            }
+            ren.drawText(shown, {textX, labelY}, m_smallFont,
                          primaryText, kSliderLabelScale);
 
             char pBuf[16];
             std::snprintf(pBuf, sizeof(pBuf), "%d%%", static_cast<int>(std::round(value * 100.f)));
             nxui::Vec2 psz = m_smallFont->measure(pBuf);
-            ren.drawText(pBuf, {card.x + card.width - 12.f - psz.x * kSliderLabelScale, card.y + 8.f},
+            ren.drawText(pBuf, {card.x + card.width - 12.f - psz.x * kSliderLabelScale, labelY},
                          m_smallFont, secondaryText, kSliderLabelScale);
         }
 
@@ -3476,13 +3505,13 @@ void QuickSettingsOverlay::render(nxui::Renderer& ren) {
         : nxui::Color(0.38f, 0.62f, 1.f, 1.f);
 
     drawSlider(ItemIndex::BgmVolume, i18n.tr("quicksettings.bgm_volume", "Music (BGM)"),
-               m_bgmVolume, accentFill);
+               m_bgmVolume, accentFill, 0xE3A1); // music_note
 
     drawSlider(ItemIndex::SfxVolume, i18n.tr("quicksettings.sfx_volume", "Sound Effects"),
-               m_sfxVolume, accentFill);
+               m_sfxVolume, accentFill, 0xE050); // volume_up
 
     drawSlider(ItemIndex::Brightness, i18n.tr("quicksettings.brightness", "Brightness"),
-               m_brightness, accentFill);
+               m_brightness, accentFill, 0xE3A6); // brightness_6
 
     auto drawToggle = [&](ItemIndex idx, const std::string& label, bool enabled,
                           bool compact = false, bool locked = false) {
