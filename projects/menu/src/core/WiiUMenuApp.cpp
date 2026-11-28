@@ -11453,6 +11453,9 @@ std::vector<WiiUMenuApp::ActionHint> WiiUMenuApp::buildActionHints() {
         return hints;
     if (!m_config.actionHintsVisible)
         hints.clear();
+    // Cap screen hints so Info (always last) is not dropped by kHintMaxItems.
+    if ((int)hints.size() > kHintMaxItems - 1)
+        hints.resize((size_t)(kHintMaxItems - 1));
     hints.push_back({buttonGlyph(nxui::Button::RStick),
                      nxui::I18n::instance().tr("hint.info", "Info")});
     return hints;
