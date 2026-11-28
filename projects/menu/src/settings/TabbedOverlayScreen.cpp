@@ -1070,6 +1070,14 @@ void TabbedOverlayScreen::onContentRender(nxui::Renderer& ren) {
     drawContent(ren, p, textOp);
     drawDropdown(ren, p, textOp);
     drawTrackChangedToast(ren, p, textOp);
+
+    // Footer hairline — legend chips from HOME sit below this inside the panel.
+    const float footerH = overlayFooterHeight();
+    if (footerH > 0.5f && m_theme && chrome > 0.01f) {
+        const float y = p.bottom() - footerH;
+        const nxui::Color line = m_theme->panelBorder.withAlpha(0.35f * textOp * chrome);
+        ren.drawRect({p.x + kInnerPad, y, std::max(0.f, p.width - 2.f * kInnerPad), 1.f}, line);
+    }
     ren.popClipRect();
 }
 

@@ -304,6 +304,7 @@ nxui::Rect TabbedOverlayScreen::tabsRect() const {
 
 nxui::Rect TabbedOverlayScreen::tabsRect(const nxui::Rect& panel) const {
     const float headerH = overlayHeaderHeight();
+    const float footerH = overlayFooterHeight();
     if (useTopTabRail()) {
         // Horizontal strip under the title/folder header (or panel top).
         const float rowH = useIconOnlyTopTabs() ? 52.f : kTabRowHeight;
@@ -311,8 +312,10 @@ nxui::Rect TabbedOverlayScreen::tabsRect(const nxui::Rect& panel) const {
         return { panel.x + kInnerPad, panel.y + kInnerPad + headerH,
                  std::max(0.f, panel.width - 2.f * kInnerPad), stripH };
     }
-    return { panel.x + kInnerPad, panel.y + kInnerPad + headerH,
-             overlayTabWidth(), panel.height - 2 * kInnerPad - headerH };
+    const float top = panel.y + kInnerPad + headerH;
+    const float bottom = panel.bottom() - kInnerPad - footerH;
+    return { panel.x + kInnerPad, top,
+             overlayTabWidth(), std::max(0.f, bottom - top) };
 }
 
 nxui::Rect TabbedOverlayScreen::contentRect() const {
@@ -322,6 +325,7 @@ nxui::Rect TabbedOverlayScreen::contentRect() const {
 
 nxui::Rect TabbedOverlayScreen::contentRect(const nxui::Rect& panel) const {
     const float headerH = overlayHeaderHeight();
+    const float footerH = overlayFooterHeight();
     if (useTopTabRail()) {
         const nxui::Rect tr = tabsRect(panel);
         const float titleH = selectedTabTitleHeight();
@@ -329,11 +333,19 @@ nxui::Rect TabbedOverlayScreen::contentRect(const nxui::Rect& panel) const {
         const float top = tr.bottom() + (titleH > 0.f ? titleH + 12.f : 12.f);
         return { panel.x + kInnerPad, top,
                  std::max(0.f, panel.width - 2.f * kInnerPad),
-                 std::max(0.f, panel.bottom() - kInnerPad - top) };
+                 std::max(0.f, panel.bottom() - kInnerPad - footerH - top) };
     }
     float left = panel.x + kInnerPad + overlayTabWidth() + kInnerPad;
-    return { left, panel.y + kInnerPad + headerH,
-             panel.right() - kInnerPad - left, panel.height - 2 * kInnerPad - headerH };
+    const float top = panel.y + kInnerPad + headerH;
+    const float bottom = panel.bottom() - kInnerPad - footerH;
+    return { left, top,
+             panel.right() - kInnerPad - left, std::max(0.f, bottom - top) };
+}
+
+nxui::Rect TabbedOverlayScreen::footerRect() const {
+    nxui::Rect panel = panelRect(scale());
+    const float h = overlayFooterHeight();
+    return { panel.x, panel.bottom() - h, panel.width, h };
 }
 
 float TabbedOverlayScreen::contentTotalHeight() const {

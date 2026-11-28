@@ -681,6 +681,18 @@ bool WiiUMenuApp::settingsLikeWindowActive() const {
         || (m_heroCustomize && m_heroCustomize->isActive());
 }
 
+const TabbedOverlayScreen* WiiUMenuApp::activeTabbedWindow() const {
+    if (m_settings && m_settings->isActive())
+        return m_settings.get();
+    if (m_themeShop && m_themeShop->isActive())
+        return m_themeShop.get();
+    if (m_gameOptions && m_gameOptions->isActive())
+        return m_gameOptions.get();
+    if (m_folderOptions && m_folderOptions->isActive())
+        return m_folderOptions.get();
+    return nullptr;
+}
+
 void WiiUMenuApp::pollDeferredLeaveCapture() {
     if (!m_leaveCaptureDeferred || hasActiveLeaveCaptureOverlay())
         return;
@@ -11907,6 +11919,20 @@ void WiiUMenuApp::renderActionHintBar(nxui::Renderer& ren) {
             if (!keep[i]) continue;
             rowW += slots[i].cap->width + (firstKept ? 0.f : kHintCapGap);
             firstKept = false;
+        }
+        // Tabbed windows: legend lives in the panel footer under the hairline.
+        if (const TabbedOverlayScreen* win = activeTabbedWindow()) {
+            const nxui::Rect footer = win->footerRect();
+            const float inset = win->overlayInnerPad();
+            float x = footer.right() - inset - rowW;
+            const float y = footer.y + (footer.height - kHintCapH) * 0.5f
+                + (1.f - reveal) * 4.f;
+            for (size_t i = 0; i < slots.size(); ++i) {
+                if (!keep[i]) continue;
+                drawChip(*slots[i].cap, x, y);
+                x += slots[i].cap->width + kHintCapGap;
+            }
+            return;
         }
         float x = forceOneRow ? canvasW - kHintEdgeX - rowW : (canvasW - rowW) * 0.5f;
         const float y = canvasH - kHintEdgeY - kHintCapH + (1.f - reveal) * 4.f;

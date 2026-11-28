@@ -272,7 +272,12 @@ protected:
     virtual bool handleCustomNavRight() { return false; }
     virtual bool handleCustomTouch(nxui::Input&, const nxui::Rect&, const nxui::Rect&, const nxui::Rect&) { return false; }
     virtual float overlayHeaderHeight() const { return 0.f; }
+    /// Reserved band at the panel bottom for the in-window legend.
+    virtual float overlayFooterHeight() const { return 46.f; }
     virtual float overlayTabWidth() const { return kTabWidth; }
+    /// Animated panel footer band (legend lives here).
+    nxui::Rect footerRect() const;
+    float overlayInnerPad() const { return kInnerPad; }
     virtual void drawOverlayHeader(nxui::Renderer&, const nxui::Rect&, float) {}
 
     // Optional nested row under a tab (e.g. Theme Shop "Shop" under Themes/Icons).

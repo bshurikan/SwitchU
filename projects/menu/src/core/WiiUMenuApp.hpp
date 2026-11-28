@@ -259,6 +259,8 @@ private:
     bool hasActiveLeaveCaptureOverlay() const;
     /// Settings / Theme Shop / Game·Folder Options and related tabbed windows.
     bool settingsLikeWindowActive() const;
+    /// Active TabbedOverlayScreen window, else nullptr (non-tabbed keep screen legend).
+    const TabbedOverlayScreen* activeTabbedWindow() const;
     void pollDeferredLeaveCapture();
     /// Visual-only suspended outline for leave-frame capture (no focus move).
     void setSuspendedIconVisuals(std::uint64_t titleId);
