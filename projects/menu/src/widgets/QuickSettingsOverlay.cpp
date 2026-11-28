@@ -3492,8 +3492,8 @@ void QuickSettingsOverlay::render(nxui::Renderer& ren) {
         ren.drawRoundedRectOutline(card, neutralBorder.withAlpha(neutralBorder.a * cardAlpha),
                                    12.f, 1.f);
 
-        // Compact pills need room for "OFF" + knob (48 clipped the label).
-        const float pillW = compact ? 58.f : 56.f;
+        // Plain track + knob (no ON/OFF label inside the pill).
+        const float pillW = compact ? 48.f : 52.f;
         const float pillH = 28.f;
         const float pillPad = compact ? 6.f : 12.f;
         nxui::Rect pill = {card.x + card.width - pillW - pillPad,
@@ -3548,19 +3548,6 @@ void QuickSettingsOverlay::render(nxui::Renderer& ren) {
         float knobX = enabled ? (pill.x + pill.width - pillH * 0.5f) : (pill.x + pillH * 0.5f);
         ren.drawCircle({knobX, pill.y + pillH * 0.5f}, pillH * 0.40f,
                        nxui::Color(1.f, 1.f, 1.f, alpha));
-
-        if (m_smallFont) {
-            std::string stateStr = enabled
-                ? i18n.tr("quicksettings.on", "ON")
-                : i18n.tr("quicksettings.off", "OFF");
-            nxui::Vec2 ssz = m_smallFont->measure(stateStr);
-            float stx = enabled ? (pill.x + 6.f) : (pill.x + pill.width - ssz.x * 0.62f - 6.f);
-            ren.drawText(stateStr, {stx, pill.y + (pillH - ssz.y * 0.62f) * 0.5f}, m_smallFont,
-                         lightMode
-                            ? nxui::Color(0.04f, 0.05f, 0.07f, 0.95f * alpha)
-                            : nxui::Color(1.f, 1.f, 1.f, 0.95f * alpha),
-                         0.62f);
-        }
     };
 
     {
