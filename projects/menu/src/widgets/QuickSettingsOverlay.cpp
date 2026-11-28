@@ -3511,7 +3511,7 @@ void QuickSettingsOverlay::render(nxui::Renderer& ren) {
                m_sfxVolume, accentFill, 0xE050); // volume_up
 
     drawSlider(ItemIndex::Brightness, i18n.tr("quicksettings.brightness", "Brightness"),
-               m_brightness, accentFill, 0xE3A6); // brightness_6
+               m_brightness, accentFill, 0xE430); // wb_sunny
 
     auto drawToggle = [&](ItemIndex idx, const std::string& label, bool enabled,
                           bool compact = false, bool locked = false) {
