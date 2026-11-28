@@ -558,7 +558,7 @@ protected:
         float t = std::clamp(m_item.anim01, 0.f, 1.f);
         if (rowTheme) {
             nxui::Color offC = nxui::Color(0.45f, 0.45f, 0.5f, 1.f);
-            nxui::Color onC = nxui::Color(0.2f, 0.8f, 0.4f, 1.f);
+            nxui::Color onC = rowTheme->cursorNormal;
             nxui::Color bg = nxui::Color(
                 offC.r + (onC.r - offC.r) * t,
                 offC.g + (onC.g - offC.g) * t,

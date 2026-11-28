@@ -3471,14 +3471,18 @@ void QuickSettingsOverlay::render(nxui::Renderer& ren) {
         }
     }
 
+    const nxui::Color accentFill = m_theme
+        ? m_theme->cursorNormal
+        : nxui::Color(0.38f, 0.62f, 1.f, 1.f);
+
     drawSlider(ItemIndex::BgmVolume, i18n.tr("quicksettings.bgm_volume", "Music (BGM)"),
-               m_bgmVolume, nxui::Color(0.68f, 0.45f, 0.95f, 1.f));
+               m_bgmVolume, accentFill);
 
     drawSlider(ItemIndex::SfxVolume, i18n.tr("quicksettings.sfx_volume", "Sound Effects"),
-               m_sfxVolume, nxui::Color(0.18f, 0.82f, 0.55f, 1.f));
+               m_sfxVolume, accentFill);
 
     drawSlider(ItemIndex::Brightness, i18n.tr("quicksettings.brightness", "Brightness"),
-               m_brightness, nxui::Color(0.15f, 0.75f, 0.98f, 1.f));
+               m_brightness, accentFill);
 
     auto drawToggle = [&](ItemIndex idx, const std::string& label, bool enabled,
                           bool compact = false, bool locked = false) {
@@ -3536,7 +3540,7 @@ void QuickSettingsOverlay::render(nxui::Renderer& ren) {
         }
 
         nxui::Color pillBg = enabled
-            ? nxui::Color(0.20f, 0.82f, 0.45f, (locked ? 0.70f : 0.90f) * alpha)
+            ? accentFill.withAlpha((locked ? 0.70f : 0.90f) * alpha)
             : nxui::Color(0.35f, 0.38f, 0.45f, 0.75f * alpha);
 
         ren.drawRoundedRect(pill, pillBg, pillH * 0.5f);
