@@ -163,17 +163,8 @@ SettingsScreen::Tab settings::tabs::DisplayTab::build(SettingsScreen& screen) {
         t.items.push_back(std::move(it));
     }
 
-    {
-        SettingItem it; it.label = i18n.tr("settings.display.ui_wireframe", "UI Wireframe"); it.type = ItemType::Toggle;
-        it.description = i18n.tr("settings.display.ui_wireframe_desc", "Show outlines of all Box widgets for layout debugging.");
-        it.boolVal = screen.m_wireframeEnabled;
-        it.anim01 = it.boolVal ? 1.f : 0.f;
-        it.onChange = [&screen](SettingItem& self) {
-            screen.m_wireframeEnabled = self.boolVal;
-            if (screen.m_wireframeCb) screen.m_wireframeCb(self.boolVal);
-        };
-        t.items.push_back(std::move(it));
-    }
+    // UI Wireframe kept as a field/callback for debug builds; no Config
+    // developer flag exists, so hide the setting from the Display list.
 
     {
         SettingItem it;
